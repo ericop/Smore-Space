@@ -12,7 +12,7 @@ const GRID_X = 224;
 const GRID_Y = 196;
 const GRID_WIDTH = GRID_COLS * GRID_SIZE;
 const GRID_HEIGHT = GRID_ROWS * GRID_SIZE;
-const STARTING_CASH = 12;
+const STARTING_CASH = 10;
 const MARKET_REFILL_THRESHOLD = 5;
 const NAVY = "#183153";
 const NAVY_DARK = "#10233f";
@@ -117,7 +117,9 @@ const state = {
   selectedPiece: null,
   pendingPlacement: null,
   passOverlay: null,
+  passConfirmOverlay: false,
   exitOverlay: false,
+  roundNumber: 1,
   uiButtons: [],
   inputBoxes: [],
   pieceSlots: [],
@@ -233,6 +235,7 @@ function createPlayerState(name) {
   return {
     name,
     cash: STARTING_CASH,
+    passedThisRound: false,
     grid: Array.from({ length: GRID_ROWS }, () => Array.from({ length: GRID_COLS }, () => null))
   };
 }
@@ -245,7 +248,9 @@ function resetGameForPlayers(names) {
   state.selectedPiece = null;
   state.pendingPlacement = null;
   state.passOverlay = null;
+  state.passConfirmOverlay = false;
   state.exitOverlay = false;
+  state.roundNumber = 1;
   state.statusMessage = `${names[0]}'s turn. Pick from the shared market.`;
   state.screen = "game";
 }
@@ -387,12 +392,46 @@ function maybeRefillMarket() {
   return true;
 }
 
+function allPlayersPassed() {
+  return state.playerStates.length > 0 && state.playerStates.every((player) => player.passedThisRound);
+}
+
+function getNextActivePlayerIndex(startIndex) {
+  for (let offset = 1; offset <= state.playerStates.length; offset += 1) {
+    const index = (startIndex + offset) % state.playerStates.length;
+    if (!state.playerStates[index].passedThisRound) {
+      return index;
+    }
+  }
+
+  return startIndex;
+}
+
+function startNextRound() {
+  state.roundNumber += 1;
+  state.playerStates.forEach((player) => {
+    player.passedThisRound = false;
+  });
+  maybeRefillMarket();
+  state.activePlayerIndex = 0;
+  state.passOverlay = {
+    nextPlayerName: state.playerStates[0].name,
+    message: `Round ${state.roundNumber} begins. ${state.playerStates[0].name} goes first.`
+  };
+  state.statusMessage = state.passOverlay.message;
+}
+
 function advanceTurn() {
   if (state.playerStates.length === 0) {
     return;
   }
 
-  state.activePlayerIndex = (state.activePlayerIndex + 1) % state.playerStates.length;
+  if (allPlayersPassed()) {
+    startNextRound();
+    return;
+  }
+
+  state.activePlayerIndex = getNextActivePlayerIndex(state.activePlayerIndex);
   const nextPlayerName = state.playerStates[state.activePlayerIndex].name;
   const refilledMarket = maybeRefillMarket();
   let nextMessage = `${nextPlayerName}'s turn. Choose from the remaining pieces.`;
@@ -406,6 +445,20 @@ function advanceTurn() {
     nextPlayerName,
     message: nextMessage
   };
+}
+
+function confirmPassForRound() {
+  const player = getCurrentPlayerState();
+  if (!player) {
+    return;
+  }
+
+  player.passedThisRound = true;
+  state.passConfirmOverlay = false;
+  state.selectedPiece = null;
+  state.pendingPlacement = null;
+  state.statusMessage = `${player.name} is done building for round ${state.roundNumber}.`;
+  advanceTurn();
 }
 
 function canPlacePiece(player, piece, startCol, startRow) {
@@ -1202,6 +1255,10 @@ function drawGameHud(player) {
     font: "700 24px 'Trebuchet MS', sans-serif",
     color: "#fff7eb"
   });
+  drawText(`Round: ${state.roundNumber}`, 246, 24, {
+    font: "700 16px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9"
+  });
   drawText(`Cash: $${player.cash}`, 246, 74, {
     font: "700 20px 'Trebuchet MS', sans-serif",
     color: "#ffe6b9"
@@ -1244,8 +1301,23 @@ function drawGameScreen() {
     variant: "secondary"
   });
 
+  registerButton({
+    x: 744,
+    y: 410,
+    w: 160,
+    h: 46,
+    label: player.passedThisRound ? "Passed" : "Pass",
+    action: "pass-round",
+    variant: "secondary",
+    disabled: player.passedThisRound
+  });
+
   if (state.passOverlay) {
     drawPassOverlay();
+  }
+
+  if (state.passConfirmOverlay) {
+    drawPassConfirmOverlay();
   }
 
   if (state.exitOverlay) {
@@ -1328,6 +1400,55 @@ function drawExitOverlay() {
     label: "Exit",
     action: "confirm-exit-game",
     variant: "danger"
+  });
+}
+
+function drawPassConfirmOverlay() {
+  const player = getCurrentPlayerState();
+  if (!player) {
+    return;
+  }
+
+  ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  drawRoundedRect(220, 146, 520, 220, 24, "rgba(15, 20, 44, 0.96)", "rgba(255, 216, 155, 0.35)", 3);
+  drawText("Pass This Round?", CANVAS_WIDTH / 2, 206, {
+    font: "700 34px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+  drawWrappedText(
+    `Are you sure ${player.name} is done building for round ${state.roundNumber}?`,
+    CANVAS_WIDTH / 2,
+    242,
+    390,
+    38,
+    {
+      font: "26px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      align: "center"
+    }
+  );
+
+  registerButton({
+    x: 286,
+    y: 314,
+    w: 160,
+    h: 44,
+    label: "Keep Building",
+    action: "close-pass-confirm",
+    variant: "secondary"
+  });
+
+  registerButton({
+    x: 514,
+    y: 314,
+    w: 160,
+    h: 44,
+    label: "Pass",
+    action: "confirm-pass-round",
+    variant: "primary"
   });
 }
 
@@ -1427,12 +1548,28 @@ function handleAction(button) {
     state.selectedPiece = null;
     state.pendingPlacement = null;
     state.passOverlay = null;
+    state.passConfirmOverlay = false;
     state.exitOverlay = false;
     return;
   }
 
   if (button.action === "close-pass-overlay") {
     state.passOverlay = null;
+    return;
+  }
+
+  if (button.action === "pass-round") {
+    state.passConfirmOverlay = true;
+    return;
+  }
+
+  if (button.action === "close-pass-confirm") {
+    state.passConfirmOverlay = false;
+    return;
+  }
+
+  if (button.action === "confirm-pass-round") {
+    confirmPassForRound();
     return;
   }
 
@@ -1447,6 +1584,7 @@ function handleAction(button) {
     state.selectedPiece = null;
     state.pendingPlacement = null;
     state.passOverlay = null;
+    state.passConfirmOverlay = false;
     state.exitOverlay = false;
     return;
   }
@@ -1528,6 +1666,10 @@ canvas.addEventListener("pointerdown", (event) => {
   }
 
   if (state.screen === "game") {
+    if (state.passConfirmOverlay) {
+      return;
+    }
+
     if (state.exitOverlay) {
       return;
     }
