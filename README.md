@@ -4,6 +4,10 @@
 
 S'more Space is a cozy RV park building board game prototype for the browser. Each player builds their own campground by placing Tetris-style pieces onto a personal park board, trying to create a fun, useful, and profitable camping destination over the course of a season.
 
+## Try The Game Yourself
+
+[Play S'more Space](https://ericop.github.io/Smore-Space/)
+
 ## Game Idea
 
 Think of it a bit like `Kingdomino` or `Carcassonne`, but instead of sharing one map, each player has their own RV park to develop.
