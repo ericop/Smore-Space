@@ -750,7 +750,7 @@ function drawCreditsScreen() {
     align: "center"
   });
   drawWrappedText(
-    "This game was made byu EricOP and his family, and their robot helper Codex.",
+    "This game was made by EricOP and his family, and their robot helper Codex.",
     CANVAS_WIDTH / 2,
     220,
     520,
