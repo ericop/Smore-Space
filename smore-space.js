@@ -21,7 +21,6 @@ const CREAM = "#f5e7c2";
 const WOOD = "#7a5632";
 
 const BASE_SQUARE_TYPES = [
-  "test",
   "tent",
   "rv",
   "rustic",
@@ -39,7 +38,6 @@ const ADVANCED_SQUARE_TYPES = [
   "ice_cream_addon",
   "firewood_addon",
   "boat_ramp_dock",
-  "parking",
   "education_pavilion",
   "activities_pavilion",
   "covered_common_area",
@@ -112,16 +110,6 @@ const TYPE_COLORS = {
   field_sports: "#5db36f"
 };
 
-const PROXY_AMENITY_TYPES = {
-  sports_field: ["test", "recreation_field"],
-  covered_common_area: ["test"],
-  vending: ["test"],
-  bait_gear: ["test"],
-  rentals: ["test"],
-  event_space: ["test"],
-  education_space: ["test"]
-};
-
 const DOMINO_SHAPES = [
   [[0, 0], [1, 0]],
   [[0, 0], [0, 1]],
@@ -166,7 +154,7 @@ const ARRIVAL_CARD_DEFINITIONS = [
   {
     id: "early-1",
     phase: "early",
-    name: "Spring Test Campers",
+    name: "Spring Trial Campers",
     requirementsText: "Any 2 sites + 1 bathroom",
     bonusText: "+$2 if you have showers",
     noteText: "We are just here to see if we like camping...",
@@ -442,7 +430,7 @@ const ARRIVAL_CARD_DEFINITIONS = [
     phase: "mid",
     name: "Kayak Crew",
     requirementsText: "2 tent or RV + lake",
-    bonusText: "+$3 boat ramp, +$2 rentals proxy",
+    bonusText: "+$3 boat ramp, +$2 rentals",
     baseIncome: 6,
     evaluate: (player) => {
       const qualifying = countMatchingSites(player, (cell) => (isSiteType(cell.type, "tent") || isSiteType(cell.type, "rv")) && isLakeAccessCell(cell.row, cell.col));
@@ -468,7 +456,6 @@ const ARRIVAL_CARD_DEFINITIONS = [
     name: "Road Trip Influencers",
     requirementsText: "Any 2 sites",
     bonusText: "+$5 if both scenic",
-    noteText: "Reputation hook ignored for now",
     baseIncome: 4,
     evaluate: (player) => {
       const scenicSites = getMatchingSites(player, (cell) => isAnySiteType(cell.type) && isScenicSite(player, cell.row, cell.col));
@@ -729,14 +716,13 @@ const ARRIVAL_CARD_DEFINITIONS = [
     phase: "late",
     name: "Camp Cleanup Volunteers",
     requirementsText: "Any 2 sites",
-    bonusText: "Gain +$2 and clear future negative effect",
-    noteText: "TODO future negative effects hook",
+    bonusText: "Gain +$2",
     baseIncome: 2,
     evaluate: (player) => {
       if (countAnySites(player) < 2) {
         return null;
       }
-      return buildArrivalMatch(2, ["2 sites"], ["cleanup bonus"], [], ["TODO: hook into negative effect system later"]);
+      return buildArrivalMatch(2, ["2 sites"], ["cleanup bonus"]);
     }
   },
   {
@@ -773,7 +759,6 @@ const ARRIVAL_CARD_DEFINITIONS = [
     name: "Romantic Anniversary Stay",
     requirementsText: "1 cabin + scenic",
     bonusText: "+$5 if isolated",
-    noteText: "Luxury hook for later",
     baseIncome: 6,
     evaluate: (player) => {
       const cabin = findMatchingSite(player, (cell) => isSiteType(cell.type, "cabin") && isScenicSite(player, cell.row, cell.col));
@@ -782,12 +767,11 @@ const ARRIVAL_CARD_DEFINITIONS = [
       }
       let income = 6;
       const bonuses = [];
-      const notes = ["TODO: luxury upgrade bonus hook"];
       if (isIsolatedSite(player, cabin.row, cabin.col)) {
         income += 5;
         bonuses.push("isolated");
       }
-      return buildArrivalMatch(income, ["scenic cabin"], bonuses, [], notes);
+      return buildArrivalMatch(income, ["scenic cabin"], bonuses);
     }
   }
 ];
@@ -1081,17 +1065,6 @@ function ensureOverlayFocus() {
   state.focusedButtonAction = overlay.actions[state.focusedModalButtonIndex] || overlay.defaultAction;
 }
 
-function getActiveOverlayButtons() {
-  const overlay = getActiveOverlayConfig();
-  if (!overlay) {
-    return [];
-  }
-
-  return overlay.actions
-    .map((action) => state.uiButtons.find((button) => button.action === action && !button.disabled))
-    .filter(Boolean);
-}
-
 function setFocusedModalButtonIndex(index) {
   const overlay = getActiveOverlayConfig();
   if (!overlay || !overlay.actions.length) {
@@ -1321,6 +1294,7 @@ function normalizeSquareType(squareType) {
     return "educational_pavilion";
   }
 
+  // Keep old prototype boards readable without spawning new "test" tiles.
   if (squareType === "test") {
     return "recreation_field";
   }
@@ -1373,18 +1347,16 @@ function cellMatchesAmenity(squareType, amenity) {
     boat_ramp: ["boat_ramp_dock"],
     event_space: ["educational_pavilion", "activities_pavilion", "covered_common_area"],
     education_space: ["educational_pavilion"],
-    covered_common_area: ["camp_store", "activities_pavilion", "educational_pavilion", "covered_common_area"],
-    vending: ["camp_store", "ice_cream_addon", "vending"],
-    ice_cream: ["ice_cream_addon", "camp_store"],
+    covered_common_area: ["covered_common_area"],
+    vending: ["vending"],
+    ice_cream: ["ice_cream_addon"],
     firewood: ["camp_fire_wood_store_addon", "camp_fire_wood_store", "firewood_addon"],
-    bait_gear: ["camp_store", "bait_gear"],
-    rentals: ["boat_ramp_dock", "camp_store", "rentals"]
+    bait_gear: ["bait_gear"],
+    rentals: ["rentals"]
   };
 
   const directMatches = amenityMap[amenity] || [];
-  const proxyMatches = PROXY_AMENITY_TYPES[amenity] || [];
-
-  return directMatches.includes(type) || proxyMatches.includes(squareType);
+  return directMatches.includes(type);
 }
 
 function countSiteType(player, type) {
@@ -1637,10 +1609,6 @@ function isFamilyFriendlySite(player, cell) {
   );
 }
 
-function getFamilyFriendlySiteCount(player) {
-  return getSiteCells(player).filter((cell) => isFamilyFriendlySite(player, cell)).length;
-}
-
 function getOrthogonalAdjacentMatches(player, row, col, predicate) {
   return getOrthogonalNeighbors(row, col)
     .map((neighbor) => {
@@ -1673,18 +1641,6 @@ function getNearbyMatches(player, row, col, distance, predicate) {
       };
     })
     .filter((cell) => cell && predicate(cell));
-}
-
-function countSitesNearAmenity(player, amenityType, siteTypes, distance = 2) {
-  const matchedSiteKeys = new Set();
-  getAmenityCells(player, amenityType).forEach((amenityCell) => {
-    getNearbyMatches(player, amenityCell.row, amenityCell.col, distance, (cell) =>
-      isAnySiteType(cell.type) && siteTypes.includes(normalizeSquareType(cell.type))
-    ).forEach((siteCell) => {
-      matchedSiteKeys.add(`${siteCell.row},${siteCell.col}`);
-    });
-  });
-  return matchedSiteKeys.size;
 }
 
 function getAmenityDemandScore(player, amenityType) {
