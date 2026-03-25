@@ -14,6 +14,7 @@ const GRID_WIDTH = GRID_COLS * GRID_SIZE;
 const GRID_HEIGHT = GRID_ROWS * GRID_SIZE;
 const STARTING_CASH = 10;
 const MARKET_REFILL_THRESHOLD = 5;
+const MAX_ROUNDS = 5;
 const NAVY = "#183153";
 const NAVY_DARK = "#10233f";
 const CREAM = "#f5e7c2";
@@ -21,6 +22,7 @@ const WOOD = "#7a5632";
 
 const BASE_SQUARE_TYPES = [
   "test",
+  "tent",
   "rv",
   "rustic",
   "cabin",
@@ -40,29 +42,84 @@ const ADVANCED_SQUARE_TYPES = [
   "parking",
   "education_pavilion",
   "activities_pavilion",
+  "covered_common_area",
+  "vending",
+  "bait_gear",
+  "rentals",
+  "recreation_field",
   "beach",
   "forest_path",
   "field_sports"
 ];
 
+const DRAWABLE_SQUARE_TYPES = [...BASE_SQUARE_TYPES, ...ADVANCED_SQUARE_TYPES];
+
 const BASE_TYPE_LABELS = {
-  test: "Test",
+  test: "Rec",
+  tent: "Tent",
   rv: "RV",
   rustic: "Rustic",
   cabin: "Cabin",
   bathroom: "Bath",
   shower: "Shower",
-  camp_store: "Store"
+  camp_store: "Store",
+  tent_electric: "E-Tent",
+  playground: "Play",
+  water_station: "Water",
+  septic_dump: "Dump",
+  ice_cream_addon: "Ice",
+  firewood_addon: "Wood",
+  boat_ramp_dock: "Dock",
+  parking: "Park",
+  education_pavilion: "Edu",
+  activities_pavilion: "Event",
+  covered_common_area: "Shelter",
+  vending: "Vend",
+  bait_gear: "Bait",
+  rentals: "Rental",
+  recreation_field: "Rec",
+  beach: "Beach",
+  forest_path: "Trail",
+  field_sports: "Sports"
 };
 
 const TYPE_COLORS = {
-  test: "#9ad2ff",
+  test: "#7fc9d6",
+  tent: "#d8d27c",
   rv: "#6ed39f",
   rustic: "#d8b27c",
   cabin: "#f39b63",
   bathroom: "#c88dff",
   shower: "#7be0e6",
-  camp_store: "#ffdb6e"
+  camp_store: "#ffdb6e",
+  tent_electric: "#8ddf97",
+  playground: "#ff9b7c",
+  water_station: "#79c9ff",
+  septic_dump: "#8a7c64",
+  ice_cream_addon: "#ffb7da",
+  firewood_addon: "#b97846",
+  boat_ramp_dock: "#5aa0d6",
+  parking: "#9ca7b2",
+  education_pavilion: "#9fbc6c",
+  activities_pavilion: "#e0aa68",
+  covered_common_area: "#9cb8c9",
+  vending: "#e66767",
+  bait_gear: "#6ba9b8",
+  rentals: "#8d95d8",
+  recreation_field: "#78b86e",
+  beach: "#f0d28a",
+  forest_path: "#6e8f55",
+  field_sports: "#5db36f"
+};
+
+const PROXY_AMENITY_TYPES = {
+  sports_field: ["test", "recreation_field"],
+  covered_common_area: ["test"],
+  vending: ["test"],
+  bait_gear: ["test"],
+  rentals: ["test"],
+  event_space: ["test"],
+  education_space: ["test"]
 };
 
 const DOMINO_SHAPES = [
@@ -97,6 +154,644 @@ const COMPLEX_SHAPES = [
   [[1, 0], [0, 1], [1, 1], [2, 1], [0, 2]]
 ];
 
+const ARRIVAL_PHASE_ORDER = ["early", "mid", "late"];
+
+const ARRIVAL_PHASE_LABELS = {
+  early: "Early Summer",
+  mid: "Mid Summer",
+  late: "Late Summer"
+};
+
+const ARRIVAL_CARD_DEFINITIONS = [
+  {
+    id: "early-1",
+    phase: "early",
+    name: "Spring Test Campers",
+    requirementsText: "Any 2 sites + 1 bathroom",
+    bonusText: "+$2 if you have showers",
+    noteText: "We are just here to see if we like camping...",
+    baseIncome: 4,
+    evaluate: (player) => {
+      if (countAnySites(player) < 2 || !hasAmenity(player, "bathroom")) {
+        return null;
+      }
+      let income = 4;
+      if (hasAmenity(player, "shower")) {
+        income += 2;
+      }
+      return buildArrivalMatch(income, ["2+ sites", "bathroom"], hasAmenity(player, "shower") ? ["showers"] : []);
+    }
+  },
+  {
+    id: "early-2",
+    phase: "early",
+    name: "Retired RV Pair",
+    requirementsText: "1 RV site + hookups",
+    bonusText: "+$3 if no tent sites adjacent",
+    noteText: "-$2 if crowded near the RV",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const rvSite = findMatchingSite(player, (cell) => isSiteType(cell.type, "rv") && hasHookupsForType(cell.type));
+      if (!rvSite) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      const penalties = [];
+      if (!hasAdjacentSiteType(player, rvSite.row, rvSite.col, "tent")) {
+        income += 3;
+        bonuses.push("quiet RV pad");
+      }
+      if (countAdjacentOccupiedSites(player, rvSite.row, rvSite.col) > 3) {
+        income -= 2;
+        penalties.push("crowded");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["RV with hookups"], bonuses, penalties);
+    }
+  },
+  {
+    id: "early-3",
+    phase: "early",
+    name: "Scout Troop",
+    requirementsText: "3 tent sites + forest adjacency",
+    bonusText: "+$4 if event space",
+    noteText: "Single group, fills multiple sites",
+    baseIncome: 6,
+    evaluate: (player) => {
+      if (countForestAdjacentSites(player, "tent") < 3) {
+        return null;
+      }
+      let income = 6;
+      const bonuses = [];
+      if (hasAmenity(player, "event_space")) {
+        income += 4;
+        bonuses.push("event space");
+      }
+      return buildArrivalMatch(income, ["3 forest-adjacent tent sites"], bonuses);
+    }
+  },
+  {
+    id: "early-4",
+    phase: "early",
+    name: "Early Bird Fishermen",
+    requirementsText: "1 tent or RV + lake access",
+    bonusText: "+$3 boat ramp, +$1 bait/gear store",
+    baseIncome: 5,
+    evaluate: (player) => {
+      if (!hasLakeAccess(player, (cell) => isSiteType(cell.type, "tent") || isSiteType(cell.type, "rv"))) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (hasAmenity(player, "boat_ramp")) {
+        income += 3;
+        bonuses.push("boat ramp");
+      }
+      if (hasAmenity(player, "bait_gear")) {
+        income += 1;
+        bonuses.push("bait or gear sales");
+      }
+      return buildArrivalMatch(income, ["lake site"], bonuses);
+    }
+  },
+  {
+    id: "early-5",
+    phase: "early",
+    name: "Cabin Weekend Couple",
+    requirementsText: "1 cabin",
+    bonusText: "+$2 isolated, +$2 scenic",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const cabin = findMatchingSite(player, (cell) => isSiteType(cell.type, "cabin"));
+      if (!cabin) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (isIsolatedSite(player, cabin.row, cabin.col)) {
+        income += 2;
+        bonuses.push("isolated");
+      }
+      if (isScenicSite(player, cabin.row, cabin.col)) {
+        income += 2;
+        bonuses.push("scenic");
+      }
+      return buildArrivalMatch(income, ["cabin"], bonuses);
+    }
+  },
+  {
+    id: "early-6",
+    phase: "early",
+    name: "Minimalist Backpackers",
+    requirementsText: "2 tent sites (forest only)",
+    bonusText: "+$3 if no amenities nearby",
+    noteText: "-$2 if near RVs or vending",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const forestTentSites = getMatchingSites(player, (cell) => isSiteType(cell.type, "tent") && isForestAdjacentCell(cell.row, cell.col));
+      if (forestTentSites.length < 2) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      const penalties = [];
+      const bestPair = forestTentSites.slice(0, 2);
+      if (bestPair.every((cell) => !hasNearbyAmenity(player, cell.row, cell.col, ["bathroom", "shower", "playground", "sports_field", "vending", "boat_ramp", "ice_cream", "firewood"]))) {
+        income += 3;
+        bonuses.push("no amenities nearby");
+      }
+      if (bestPair.some((cell) => hasAdjacentSiteType(player, cell.row, cell.col, "rv") || hasNearbyAmenity(player, cell.row, cell.col, ["vending"]))) {
+        income -= 2;
+        penalties.push("too close to RVs or vending");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["2 forest tent sites"], bonuses, penalties);
+    }
+  },
+  {
+    id: "early-7",
+    phase: "early",
+    name: "Campground Inspectors",
+    requirementsText: "1 bathroom + 1 shower + any site",
+    bonusText: "+$5 if all present",
+    noteText: "If missing any, gain $0",
+    baseIncome: 0,
+    evaluate: (player) => {
+      if (!hasAmenity(player, "bathroom") || !hasAmenity(player, "shower") || countAnySites(player) < 1) {
+        return null;
+      }
+      return buildArrivalMatch(5, ["bathroom", "shower", "site"], ["inspection passed"]);
+    }
+  },
+  {
+    id: "early-8",
+    phase: "early",
+    name: "Rainy Weekend Travelers",
+    requirementsText: "1 cabin or RV",
+    bonusText: "+$3 if covered/common area",
+    noteText: "Tents cannot satisfy",
+    baseIncome: 4,
+    evaluate: (player) => {
+      if (countSiteType(player, "cabin") < 1 && countSiteType(player, "rv") < 1) {
+        return null;
+      }
+      let income = 4;
+      const bonuses = [];
+      if (hasAmenity(player, "covered_common_area")) {
+        income += 3;
+        bonuses.push("covered area");
+      }
+      return buildArrivalMatch(income, ["cabin or RV"], bonuses);
+    }
+  },
+  {
+    id: "early-9",
+    phase: "early",
+    name: "Family Trial Trip",
+    requirementsText: "1 tent + 1 bathroom",
+    bonusText: "+$2 playground, +$1 ice cream or vending",
+    baseIncome: 4,
+    evaluate: (player) => {
+      if (countSiteType(player, "tent") < 1 || !hasAmenity(player, "bathroom")) {
+        return null;
+      }
+      let income = 4;
+      const bonuses = [];
+      if (hasAmenity(player, "playground")) {
+        income += 2;
+        bonuses.push("playground");
+      }
+      if (hasAmenity(player, "ice_cream") || hasAmenity(player, "vending")) {
+        income += 1;
+        bonuses.push("treats");
+      }
+      return buildArrivalMatch(income, ["tent", "bathroom"], bonuses);
+    }
+  },
+  {
+    id: "mid-10",
+    phase: "mid",
+    name: "Full Hookup RV Rally",
+    requirementsText: "3 RV sites with hookups",
+    bonusText: "+$6 if all adjacent",
+    noteText: "-$3 if near tents",
+    baseIncome: 8,
+    evaluate: (player) => {
+      const rvSites = getMatchingSites(player, (cell) => isSiteType(cell.type, "rv") && hasHookupsForType(cell.type));
+      if (rvSites.length < 3) {
+        return null;
+      }
+      let income = 8;
+      const bonuses = [];
+      const penalties = [];
+      const adjacentGroup = findAdjacentGroup(rvSites, 3);
+      if (adjacentGroup) {
+        income += 6;
+        bonuses.push("adjacent rally sites");
+        if (adjacentGroup.some((cell) => hasAdjacentSiteType(player, cell.row, cell.col, "tent"))) {
+          income -= 3;
+          penalties.push("too close to tents");
+        }
+      } else if (rvSites.some((cell) => hasAdjacentSiteType(player, cell.row, cell.col, "tent"))) {
+        income -= 3;
+        penalties.push("too close to tents");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["3 RV hookup sites"], bonuses, penalties);
+    }
+  },
+  {
+    id: "mid-11",
+    phase: "mid",
+    name: "Lake Day Families",
+    requirementsText: "2 sites + lake access",
+    bonusText: "+$4 playground, +$2 ice cream",
+    baseIncome: 6,
+    evaluate: (player) => {
+      if (countLakeAccessSites(player) < 2) {
+        return null;
+      }
+      let income = 6;
+      const bonuses = [];
+      if (hasAmenity(player, "playground")) {
+        income += 4;
+        bonuses.push("playground");
+      }
+      if (hasAmenity(player, "ice_cream")) {
+        income += 2;
+        bonuses.push("ice cream");
+      }
+      return buildArrivalMatch(income, ["2 lake-access sites"], bonuses);
+    }
+  },
+  {
+    id: "mid-12",
+    phase: "mid",
+    name: "Summer Camp Program",
+    requirementsText: "2 cabins + 2 tent sites + event space",
+    bonusText: "+$6 if fully satisfied",
+    noteText: "Big payout",
+    baseIncome: 0,
+    evaluate: (player) => {
+      if (countSiteType(player, "cabin") < 2 || countSiteType(player, "tent") < 2 || !hasAmenity(player, "event_space")) {
+        return null;
+      }
+      return buildArrivalMatch(10, ["2 cabins", "2 tents", "event space"], ["full program"]);
+    }
+  },
+  {
+    id: "mid-13",
+    phase: "mid",
+    name: "Kayak Crew",
+    requirementsText: "2 tent or RV + lake",
+    bonusText: "+$3 boat ramp, +$2 rentals proxy",
+    baseIncome: 6,
+    evaluate: (player) => {
+      const qualifying = countMatchingSites(player, (cell) => (isSiteType(cell.type, "tent") || isSiteType(cell.type, "rv")) && isLakeAccessCell(cell.row, cell.col));
+      if (qualifying < 2) {
+        return null;
+      }
+      let income = 6;
+      const bonuses = [];
+      if (hasAmenity(player, "boat_ramp")) {
+        income += 3;
+        bonuses.push("boat ramp");
+      }
+      if (hasAmenity(player, "rentals")) {
+        income += 2;
+        bonuses.push("rentals");
+      }
+      return buildArrivalMatch(income, ["2 lake-access tent/RV sites"], bonuses);
+    }
+  },
+  {
+    id: "mid-14",
+    phase: "mid",
+    name: "Road Trip Influencers",
+    requirementsText: "Any 2 sites",
+    bonusText: "+$5 if both scenic",
+    noteText: "Reputation hook ignored for now",
+    baseIncome: 4,
+    evaluate: (player) => {
+      const scenicSites = getMatchingSites(player, (cell) => isAnySiteType(cell.type) && isScenicSite(player, cell.row, cell.col));
+      if (countAnySites(player) < 2) {
+        return null;
+      }
+      let income = 4;
+      const bonuses = [];
+      if (scenicSites.length >= 2) {
+        income += 5;
+        bonuses.push("2 scenic sites");
+      }
+      return buildArrivalMatch(income, ["2 sites"], bonuses);
+    }
+  },
+  {
+    id: "mid-15",
+    phase: "mid",
+    name: "Youth Sports Team",
+    requirementsText: "3 sites + sports field",
+    bonusText: "+$4 if bathrooms nearby",
+    noteText: "-$2 if not",
+    baseIncome: 6,
+    evaluate: (player) => {
+      if (countAnySites(player) < 3 || !hasAmenity(player, "sports_field")) {
+        return null;
+      }
+      let income = 6;
+      const sportsTiles = getAmenityCells(player, "sports_field");
+      const nearBath = sportsTiles.some((cell) => hasNearbyAmenity(player, cell.row, cell.col, ["bathroom"]));
+      if (nearBath) {
+        income += 4;
+        return buildArrivalMatch(income, ["3 sites", "sports field"], ["bathrooms nearby"]);
+      }
+      income -= 2;
+      return buildArrivalMatch(Math.max(0, income), ["3 sites", "sports field"], [], ["no nearby bathrooms"]);
+    }
+  },
+  {
+    id: "mid-16",
+    phase: "mid",
+    name: "Glamping Couple",
+    requirementsText: "1 cabin",
+    bonusText: "+$4 near lake, +$2 not near tents",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const cabin = findMatchingSite(player, (cell) => isSiteType(cell.type, "cabin"));
+      if (!cabin) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (isLakeAccessCell(cabin.row, cabin.col)) {
+        income += 4;
+        bonuses.push("near lake");
+      }
+      if (!hasAdjacentSiteType(player, cabin.row, cabin.col, "tent")) {
+        income += 2;
+        bonuses.push("quiet cabin");
+      }
+      return buildArrivalMatch(income, ["cabin"], bonuses);
+    }
+  },
+  {
+    id: "mid-17",
+    phase: "mid",
+    name: "Weekend Overflow Crowd",
+    requirementsText: "Any 3 empty sites available",
+    bonusText: "+$1 per site filled",
+    noteText: "-$3 if bathroom capacity exceeded",
+    baseIncome: 3,
+    evaluate: (player) => {
+      const openCapacity = countPotentialSiteCapacity(player);
+      if (openCapacity < 3) {
+        return null;
+      }
+      let income = 6;
+      const penalties = [];
+      if (countAnySites(player) > countAmenity(player, "bathroom") * 4 + 4) {
+        income -= 3;
+        penalties.push("bathroom capacity strained");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["space for 3 more campers"], ["fills 3 sites"], penalties);
+    }
+  },
+  {
+    id: "mid-18",
+    phase: "mid",
+    name: "Firewood Fanatics",
+    requirementsText: "Any 2 sites",
+    bonusText: "+$3 firewood, +$1 per campfire-friendly adjacency",
+    baseIncome: 4,
+    evaluate: (player) => {
+      if (countAnySites(player) < 2) {
+        return null;
+      }
+      let income = 4;
+      const bonuses = [];
+      if (hasAmenity(player, "firewood")) {
+        income += 3;
+        bonuses.push("firewood sales");
+      }
+      const adjacencyBonus = Math.min(3, countCampfireFriendlyAdjacencies(player));
+      if (adjacencyBonus > 0) {
+        income += adjacencyBonus;
+        bonuses.push(`${adjacencyBonus} campfire-friendly adjacencies`);
+      }
+      return buildArrivalMatch(income, ["2 sites"], bonuses);
+    }
+  },
+  {
+    id: "late-19",
+    phase: "late",
+    name: "Leaf Peepers (Early)",
+    requirementsText: "1 tent or cabin + forest",
+    bonusText: "+$4 if multiple forest adjacencies",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const scenicSite = findMatchingSite(player, (cell) => (isSiteType(cell.type, "tent") || isSiteType(cell.type, "cabin")) && isForestAdjacentCell(cell.row, cell.col));
+      if (!scenicSite) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (countForestAdjacenciesForCell(scenicSite.row, scenicSite.col) >= 2) {
+        income += 4;
+        bonuses.push("deep forest view");
+      }
+      return buildArrivalMatch(income, ["forest tent/cabin"], bonuses);
+    }
+  },
+  {
+    id: "late-20",
+    phase: "late",
+    name: "Quiet Retreat Couple",
+    requirementsText: "1 cabin",
+    bonusText: "+$3 isolated, +$2 away from sports/playground",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const cabin = findMatchingSite(player, (cell) => isSiteType(cell.type, "cabin"));
+      if (!cabin) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (isIsolatedSite(player, cabin.row, cabin.col)) {
+        income += 3;
+        bonuses.push("isolated");
+      }
+      if (!hasNearbyAmenity(player, cabin.row, cabin.col, ["sports_field", "playground"])) {
+        income += 2;
+        bonuses.push("quiet amenities");
+      }
+      return buildArrivalMatch(income, ["cabin"], bonuses);
+    }
+  },
+  {
+    id: "late-21",
+    phase: "late",
+    name: "Discount RV Travelers",
+    requirementsText: "1 RV site",
+    bonusText: "+$2 if vacancy below half full",
+    noteText: "-$2 if crowded",
+    baseIncome: 4,
+    evaluate: (player) => {
+      if (countSiteType(player, "rv") < 1) {
+        return null;
+      }
+      let income = 4;
+      const bonuses = [];
+      const penalties = [];
+      if (hasVacancy(player)) {
+        income += 2;
+        bonuses.push("vacancy available");
+      }
+      if (isCrowded(player)) {
+        income -= 2;
+        penalties.push("crowded park");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["RV site"], bonuses, penalties);
+    }
+  },
+  {
+    id: "late-22",
+    phase: "late",
+    name: "Late Season Scouts",
+    requirementsText: "2 tent sites + forest",
+    bonusText: "+$3 event space, +$1 bathrooms nearby",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const forestTents = getMatchingSites(player, (cell) => isSiteType(cell.type, "tent") && isForestAdjacentCell(cell.row, cell.col));
+      if (forestTents.length < 2) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (hasAmenity(player, "event_space")) {
+        income += 3;
+        bonuses.push("event space");
+      }
+      if (forestTents.some((cell) => hasNearbyAmenity(player, cell.row, cell.col, ["bathroom"]))) {
+        income += 1;
+        bonuses.push("bathrooms nearby");
+      }
+      return buildArrivalMatch(income, ["2 forest tent sites"], bonuses);
+    }
+  },
+  {
+    id: "late-23",
+    phase: "late",
+    name: "Fishing Diehards",
+    requirementsText: "1 site + lake",
+    bonusText: "+$4 boat ramp, +$1 low crowd",
+    baseIncome: 5,
+    evaluate: (player) => {
+      if (!hasLakeAccess(player)) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (hasAmenity(player, "boat_ramp")) {
+        income += 4;
+        bonuses.push("boat ramp");
+      }
+      if (countAnySites(player) <= 3) {
+        income += 1;
+        bonuses.push("low crowd");
+      }
+      return buildArrivalMatch(income, ["lake-access site"], bonuses);
+    }
+  },
+  {
+    id: "late-24",
+    phase: "late",
+    name: "End-of-Summer Family Trip",
+    requirementsText: "2 sites + bathroom",
+    bonusText: "+$3 playground, +$2 ice cream",
+    baseIncome: 5,
+    evaluate: (player) => {
+      if (countAnySites(player) < 2 || !hasAmenity(player, "bathroom")) {
+        return null;
+      }
+      let income = 5;
+      const bonuses = [];
+      if (hasAmenity(player, "playground")) {
+        income += 3;
+        bonuses.push("playground");
+      }
+      if (hasAmenity(player, "ice_cream")) {
+        income += 2;
+        bonuses.push("ice cream");
+      }
+      return buildArrivalMatch(income, ["2 sites", "bathroom"], bonuses);
+    }
+  },
+  {
+    id: "late-25",
+    phase: "late",
+    name: "Camp Cleanup Volunteers",
+    requirementsText: "Any 2 sites",
+    bonusText: "Gain +$2 and clear future negative effect",
+    noteText: "TODO future negative effects hook",
+    baseIncome: 2,
+    evaluate: (player) => {
+      if (countAnySites(player) < 2) {
+        return null;
+      }
+      return buildArrivalMatch(2, ["2 sites"], ["cleanup bonus"], [], ["TODO: hook into negative effect system later"]);
+    }
+  },
+  {
+    id: "late-26",
+    phase: "late",
+    name: "Off-Grid Adventurers",
+    requirementsText: "2 forest tent sites",
+    bonusText: "+$4 if no amenities nearby",
+    noteText: "-$3 if near vending or bathrooms",
+    baseIncome: 5,
+    evaluate: (player) => {
+      const forestTents = getMatchingSites(player, (cell) => isSiteType(cell.type, "tent") && isForestAdjacentCell(cell.row, cell.col));
+      if (forestTents.length < 2) {
+        return null;
+      }
+      let income = 5;
+      const chosen = forestTents.slice(0, 2);
+      const bonuses = [];
+      const penalties = [];
+      if (chosen.every((cell) => !hasNearbyAmenity(player, cell.row, cell.col, ["bathroom", "shower", "playground", "sports_field", "vending", "ice_cream", "firewood", "boat_ramp"]))) {
+        income += 4;
+        bonuses.push("fully off-grid");
+      }
+      if (chosen.some((cell) => hasNearbyAmenity(player, cell.row, cell.col, ["vending", "bathroom"]))) {
+        income -= 3;
+        penalties.push("too close to services");
+      }
+      return buildArrivalMatch(Math.max(0, income), ["2 forest tent sites"], bonuses, penalties);
+    }
+  },
+  {
+    id: "late-27",
+    phase: "late",
+    name: "Romantic Anniversary Stay",
+    requirementsText: "1 cabin + scenic",
+    bonusText: "+$5 if isolated",
+    noteText: "Luxury hook for later",
+    baseIncome: 6,
+    evaluate: (player) => {
+      const cabin = findMatchingSite(player, (cell) => isSiteType(cell.type, "cabin") && isScenicSite(player, cell.row, cell.col));
+      if (!cabin) {
+        return null;
+      }
+      let income = 6;
+      const bonuses = [];
+      const notes = ["TODO: luxury upgrade bonus hook"];
+      if (isIsolatedSite(player, cabin.row, cabin.col)) {
+        income += 5;
+        bonuses.push("isolated");
+      }
+      return buildArrivalMatch(income, ["scenic cabin"], bonuses, [], notes);
+    }
+  }
+];
+
 const canvas = document.createElement("canvas");
 const ctx = canvas.getContext("2d");
 
@@ -112,12 +807,20 @@ const state = {
   sharedMarket: createPieceMarket(),
   launchedPlayers: [],
   statusMessage: "",
+  currentSeasonPhase: "early",
+  arrivalPhaseCards: [],
+  arrivalPhaseResults: [],
   activePlayerIndex: 0,
   activeInputIndex: 0,
+  playerSetupFocus: "input",
   selectedPiece: null,
   pendingPlacement: null,
   passOverlay: null,
   passConfirmOverlay: false,
+  memorialDayOverlay: false,
+  laborDayOverlay: false,
+  gameOverOverlay: false,
+  finalStandings: [],
   exitOverlay: false,
   roundNumber: 1,
   uiButtons: [],
@@ -214,7 +917,7 @@ function createPiece(groupName, slotIndex) {
   const cells = groupName === "dominoes"
     ? DOMINO_SHAPES[slotIndex % DOMINO_SHAPES.length]
     : COMPLEX_SHAPES[Math.floor(Math.random() * COMPLEX_SHAPES.length)];
-  const squareType = randomFrom(BASE_SQUARE_TYPES);
+  const squareType = randomFrom(DRAWABLE_SQUARE_TYPES);
 
   return {
     id: `${groupName}-${Date.now()}-${slotIndex}-${Math.random().toString(16).slice(2, 8)}`,
@@ -249,8 +952,15 @@ function resetGameForPlayers(names) {
   state.pendingPlacement = null;
   state.passOverlay = null;
   state.passConfirmOverlay = false;
+  state.memorialDayOverlay = false;
+  state.laborDayOverlay = false;
+  state.gameOverOverlay = false;
+  state.finalStandings = [];
   state.exitOverlay = false;
   state.roundNumber = 1;
+  state.currentSeasonPhase = "early";
+  state.arrivalPhaseCards = [];
+  state.arrivalPhaseResults = [];
   state.statusMessage = `${names[0]}'s turn. Pick from the shared market.`;
   state.screen = "game";
 }
@@ -258,6 +968,7 @@ function resetGameForPlayers(names) {
 function registerButton(button) {
   const hovered = pointInRect(state.pointer.x, state.pointer.y, button);
   state.uiButtons.push({ ...button, hovered });
+  const focused = !!button.focused;
 
   const fill = button.disabled
     ? "rgba(24, 49, 83, 0.28)"
@@ -276,8 +987,10 @@ function registerButton(button) {
         ? "#9ec7f3"
         : "#9ec7f3";
   const textColor = button.variant === "danger" ? "#fff7eb" : CREAM;
+  const strokeColor = focused ? "#ffcf70" : stroke;
+  const strokeWidth = focused ? 4 : 2;
 
-  drawRoundedRect(button.x, button.y, button.w, button.h, 20, fill, stroke, 2);
+  drawRoundedRect(button.x, button.y, button.w, button.h, 20, fill, strokeColor, strokeWidth);
   drawText(button.label, button.x + button.w / 2, button.y + button.h / 2, {
     font: "700 20px 'Trebuchet MS', sans-serif",
     color: textColor,
@@ -287,7 +1000,7 @@ function registerButton(button) {
 }
 
 function drawInputBox(index, x, y, w, h) {
-  const active = state.activeInputIndex === index;
+  const active = state.playerSetupFocus === "input" && state.activeInputIndex === index;
   const hovered = pointInRect(state.pointer.x, state.pointer.y, { x, y, w, h });
   const border = active ? NAVY : hovered ? "#496c97" : "rgba(24, 49, 83, 0.28)";
   const fill = active ? "rgba(24, 49, 83, 0.08)" : "rgba(255, 248, 231, 0.5)";
@@ -332,6 +1045,7 @@ function addPlayer() {
 
   state.players.push("");
   state.activeInputIndex = state.players.length - 1;
+  state.playerSetupFocus = "input";
   state.statusMessage = "";
 }
 
@@ -339,12 +1053,14 @@ function removePlayer(index) {
   if (state.players.length === 1) {
     state.players[0] = "";
     state.activeInputIndex = 0;
+    state.playerSetupFocus = "input";
     state.statusMessage = "At least one player slot stays on screen.";
     return;
   }
 
   state.players.splice(index, 1);
   state.activeInputIndex = Math.max(0, Math.min(state.activeInputIndex, state.players.length - 1));
+  state.playerSetupFocus = "input";
   state.statusMessage = "";
 }
 
@@ -369,6 +1085,404 @@ function getEnteredPlayerCount() {
 
 function getPieceCost(piece) {
   return piece.cells.length;
+}
+
+function buildArrivalMatch(income, requirements, bonuses = [], penalties = [], notes = []) {
+  return {
+    qualified: income > 0,
+    income: Math.max(0, income),
+    requirements,
+    bonuses,
+    penalties,
+    notes
+  };
+}
+
+function shuffleArray(items) {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
+}
+
+function getArrivalCardsForPhase(phase) {
+  return ARRIVAL_CARD_DEFINITIONS.filter((card) => card.phase === phase);
+}
+
+function buildArrivalPhaseDeck(phase) {
+  return shuffleArray(
+    getArrivalCardsForPhase(phase).flatMap((card) => [
+      { ...card, deckCopy: 1, instanceId: `${card.id}-a` },
+      { ...card, deckCopy: 2, instanceId: `${card.id}-b` }
+    ])
+  );
+}
+
+function normalizeSquareType(squareType) {
+  if (squareType === "tent_electric") {
+    return "tent";
+  }
+
+  if (squareType === "field_sports") {
+    return "sports_field";
+  }
+
+  if (squareType === "education_pavilion") {
+    return "educational_pavilion";
+  }
+
+  if (squareType === "test") {
+    return "recreation_field";
+  }
+
+  return squareType;
+}
+
+function isSiteType(squareType, type) {
+  return normalizeSquareType(squareType) === type;
+}
+
+function isAnySiteType(squareType) {
+  return ["rustic", "tent", "rv", "cabin"].includes(normalizeSquareType(squareType));
+}
+
+function getAllOccupiedCells(player) {
+  const cells = [];
+  for (let row = 0; row < GRID_ROWS; row += 1) {
+    for (let col = 0; col < GRID_COLS; col += 1) {
+      const type = player.grid[row][col];
+      if (!type) {
+        continue;
+      }
+      cells.push({
+        row,
+        col,
+        type,
+        normalizedType: normalizeSquareType(type)
+      });
+    }
+  }
+  return cells;
+}
+
+function getSiteCells(player) {
+  return getAllOccupiedCells(player).filter((cell) => isAnySiteType(cell.type));
+}
+
+function getAmenityCells(player, amenity) {
+  return getAllOccupiedCells(player).filter((cell) => cellMatchesAmenity(cell.type, amenity));
+}
+
+function cellMatchesAmenity(squareType, amenity) {
+  const type = normalizeSquareType(squareType);
+  const amenityMap = {
+    bathroom: ["bathroom"],
+    shower: ["shower"],
+    playground: ["playground"],
+    sports_field: ["sports_field", "field_sports", "recreation_field"],
+    boat_ramp: ["boat_ramp_dock"],
+    event_space: ["educational_pavilion", "activities_pavilion", "covered_common_area"],
+    education_space: ["educational_pavilion"],
+    covered_common_area: ["camp_store", "activities_pavilion", "educational_pavilion", "covered_common_area"],
+    vending: ["camp_store", "ice_cream_addon", "vending"],
+    ice_cream: ["ice_cream_addon", "camp_store"],
+    firewood: ["camp_fire_wood_store_addon", "camp_fire_wood_store", "firewood_addon"],
+    bait_gear: ["camp_store", "bait_gear"],
+    rentals: ["boat_ramp_dock", "camp_store", "rentals"]
+  };
+
+  const directMatches = amenityMap[amenity] || [];
+  const proxyMatches = PROXY_AMENITY_TYPES[amenity] || [];
+
+  return directMatches.includes(type) || proxyMatches.includes(squareType);
+}
+
+function countSiteType(player, type) {
+  return getSiteCells(player).filter((cell) => isSiteType(cell.type, type)).length;
+}
+
+function countAnySites(player) {
+  return getSiteCells(player).length;
+}
+
+function countAmenity(player, amenity) {
+  return getAmenityCells(player, amenity).length;
+}
+
+function hasAmenity(player, amenity) {
+  return countAmenity(player, amenity) > 0;
+}
+
+function hasHookupsForType(squareType) {
+  const type = normalizeSquareType(squareType);
+  return type === "rv" || squareType === "tent_electric";
+}
+
+function getOrthogonalNeighbors(row, col) {
+  return [
+    { row: row - 1, col },
+    { row: row + 1, col },
+    { row, col: col - 1 },
+    { row, col: col + 1 }
+  ].filter((cell) => cell.row >= 0 && cell.row < GRID_ROWS && cell.col >= 0 && cell.col < GRID_COLS);
+}
+
+function getNearbyCells(row, col, distance = 1) {
+  const cells = [];
+  for (let dy = -distance; dy <= distance; dy += 1) {
+    for (let dx = -distance; dx <= distance; dx += 1) {
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      const nextRow = row + dy;
+      const nextCol = col + dx;
+      if (nextRow < 0 || nextRow >= GRID_ROWS || nextCol < 0 || nextCol >= GRID_COLS) {
+        continue;
+      }
+      cells.push({ row: nextRow, col: nextCol });
+    }
+  }
+  return cells;
+}
+
+function getCellType(player, row, col) {
+  return player.grid[row]?.[col] || null;
+}
+
+function hasAdjacentSiteType(player, row, col, siteType) {
+  return getOrthogonalNeighbors(row, col).some((neighbor) => isSiteType(getCellType(player, neighbor.row, neighbor.col), siteType));
+}
+
+function hasNearbyAmenity(player, row, col, amenities) {
+  return getNearbyCells(row, col, 1).some((neighbor) => {
+    const type = getCellType(player, neighbor.row, neighbor.col);
+    return amenities.some((amenity) => cellMatchesAmenity(type, amenity));
+  });
+}
+
+function isLakeAccessCell(row, col) {
+  return row === 0;
+}
+
+function isForestAdjacentCell(row, col) {
+  return col === 0;
+}
+
+function countForestAdjacenciesForCell(row, col) {
+  return col === 0 ? 2 : col === 1 ? 1 : 0;
+}
+
+function hasLakeAccess(player, predicate = () => true) {
+  return getSiteCells(player).some((cell) => isLakeAccessCell(cell.row, cell.col) && predicate(cell));
+}
+
+function countLakeAccessSites(player) {
+  return getSiteCells(player).filter((cell) => isLakeAccessCell(cell.row, cell.col)).length;
+}
+
+function countForestAdjacentSites(player, type) {
+  return getSiteCells(player).filter((cell) => isSiteType(cell.type, type) && isForestAdjacentCell(cell.row, cell.col)).length;
+}
+
+function findMatchingSite(player, predicate) {
+  return getSiteCells(player).find(predicate) || null;
+}
+
+function getMatchingSites(player, predicate) {
+  return getSiteCells(player).filter(predicate);
+}
+
+function countMatchingSites(player, predicate) {
+  return getMatchingSites(player, predicate).length;
+}
+
+function isScenicSite(player, row, col) {
+  return isLakeAccessCell(row, col) || isForestAdjacentCell(row, col);
+}
+
+function isIsolatedSite(player, row, col) {
+  return getOrthogonalNeighbors(row, col).every((neighbor) => !getCellType(player, neighbor.row, neighbor.col));
+}
+
+function countAdjacentOccupiedSites(player, row, col) {
+  return getOrthogonalNeighbors(row, col).filter((neighbor) => !!getCellType(player, neighbor.row, neighbor.col)).length;
+}
+
+function isCrowded(player) {
+  return countAnySites(player) > 6;
+}
+
+function hasVacancy(player) {
+  return countAnySites(player) < Math.max(1, Math.floor(countPotentialSiteCapacity(player) / 2));
+}
+
+function countPotentialSiteCapacity(player) {
+  const existingSiteCount = countAnySites(player);
+  const openGrassEstimate = Math.max(0, 12 - existingSiteCount);
+  return existingSiteCount + openGrassEstimate;
+}
+
+function findAdjacentGroup(cells, targetSize) {
+  const cellKey = (cell) => `${cell.row},${cell.col}`;
+  const lookup = new Map(cells.map((cell) => [cellKey(cell), cell]));
+
+  for (const startCell of cells) {
+    const queue = [startCell];
+    const visited = new Set([cellKey(startCell)]);
+    const group = [];
+
+    while (queue.length) {
+      const current = queue.shift();
+      group.push(current);
+      if (group.length >= targetSize) {
+        return group.slice(0, targetSize);
+      }
+      getOrthogonalNeighbors(current.row, current.col).forEach((neighbor) => {
+        const key = `${neighbor.row},${neighbor.col}`;
+        if (!lookup.has(key) || visited.has(key)) {
+          return;
+        }
+        visited.add(key);
+        queue.push(lookup.get(key));
+      });
+    }
+  }
+
+  return null;
+}
+
+function countCampfireFriendlyAdjacencies(player) {
+  let total = 0;
+  getSiteCells(player).forEach((cell) => {
+    total += getOrthogonalNeighbors(cell.row, cell.col).filter((neighbor) => {
+      const type = getCellType(player, neighbor.row, neighbor.col);
+      return isAnySiteType(type);
+    }).length;
+  });
+  return Math.floor(total / 2);
+}
+
+function getPlayerInitials(name) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0].toUpperCase())
+    .join("");
+}
+
+function evaluateArrivalCardForPlayer(card, player) {
+  const match = card.evaluate(player);
+  if (!match || !match.qualified || match.income <= 0) {
+    return null;
+  }
+
+  return {
+    playerName: player.name,
+    playerInitials: getPlayerInitials(player.name),
+    income: match.income,
+    detail: match
+  };
+}
+
+function evaluateArrivalPhase(cards) {
+  const cardResults = cards.map((card) => {
+    const matches = state.playerStates
+      .map((player) => evaluateArrivalCardForPlayer(card, player))
+      .filter(Boolean);
+    return {
+      card,
+      matches
+    };
+  });
+
+  const playerSummaries = state.playerStates.map((player) => ({
+    playerName: player.name,
+    initials: getPlayerInitials(player.name),
+    matchedCards: cardResults.filter((result) => result.matches.some((match) => match.playerName === player.name)).length,
+    income: cardResults.reduce((total, result) => {
+      const match = result.matches.find((entry) => entry.playerName === player.name);
+      return total + (match ? match.income : 0);
+    }, 0)
+  }));
+
+  return {
+    cardResults,
+    playerSummaries
+  };
+}
+
+function revealArrivalCardsForPhase(phase) {
+  const deck = buildArrivalPhaseDeck(phase);
+  const revealedCards = deck.slice(0, 6);
+  state.currentSeasonPhase = phase;
+  state.arrivalPhaseCards = revealedCards;
+  state.arrivalPhaseResults = evaluateArrivalPhase(revealedCards);
+  state.arrivalPhaseResults.playerSummaries.forEach((summary) => {
+    const player = state.playerStates.find((entry) => entry.name === summary.playerName);
+    if (player) {
+      player.cash += summary.income;
+    }
+  });
+  console.log(`[arrival-phase] ${phase}`, revealedCards.map((card) => `${card.instanceId}:${card.name}`));
+}
+
+function advanceSeasonPhase() {
+  const currentIndex = ARRIVAL_PHASE_ORDER.indexOf(state.currentSeasonPhase);
+  if (currentIndex === ARRIVAL_PHASE_ORDER.length - 1) {
+    state.laborDayOverlay = true;
+    return;
+  }
+
+  const nextPhase = ARRIVAL_PHASE_ORDER[(currentIndex + 1) % ARRIVAL_PHASE_ORDER.length];
+  revealArrivalCardsForPhase(nextPhase);
+  state.statusMessage = `${ARRIVAL_PHASE_LABELS[nextPhase]} arrivals are now showing.`;
+}
+
+function showGameOverOverlay() {
+  state.finalStandings = [...state.playerStates]
+    .sort((left, right) => right.cash - left.cash)
+    .map((player, index) => ({
+      rank: index + 1,
+      name: player.name,
+      cash: player.cash
+    }));
+  state.gameOverOverlay = true;
+  state.memorialDayOverlay = false;
+  state.laborDayOverlay = false;
+  state.statusMessage = `${MAX_ROUNDS} years are complete. Final standings are ready.`;
+}
+
+function beginOfficeSeason() {
+  if (state.roundNumber >= MAX_ROUNDS) {
+    showGameOverOverlay();
+    return;
+  }
+
+  state.roundNumber += 1;
+  state.playerStates.forEach((player) => {
+    player.passedThisRound = false;
+  });
+  state.sharedMarket = createPieceMarket();
+  state.activePlayerIndex = 0;
+  state.selectedPiece = null;
+  state.pendingPlacement = null;
+  state.passOverlay = {
+    nextPlayerName: state.playerStates[0].name,
+    message: `Off season begins. ${state.playerStates[0].name} goes first.`
+  };
+  state.passConfirmOverlay = false;
+  state.memorialDayOverlay = false;
+  state.laborDayOverlay = false;
+  state.gameOverOverlay = false;
+  state.exitOverlay = false;
+  state.currentSeasonPhase = "early";
+  state.arrivalPhaseCards = [];
+  state.arrivalPhaseResults = [];
+  state.statusMessage = state.passOverlay.message;
+  state.screen = "game";
 }
 
 function refillEmptyMarketSlots() {
@@ -412,6 +1526,8 @@ function startCampingSeason() {
   state.pendingPlacement = null;
   state.passOverlay = null;
   state.passConfirmOverlay = false;
+  revealArrivalCardsForPhase("early");
+  state.memorialDayOverlay = true;
   state.statusMessage = "Memorial Day has come! Time to host campers.";
   state.screen = "season";
 }
@@ -924,7 +2040,8 @@ function drawPlayersScreen() {
     label: "Start",
     action: "start-game",
     variant: "primary",
-    disabled: getEnteredPlayerCount() < 2
+    disabled: getEnteredPlayerCount() < 2,
+    focused: state.playerSetupFocus === "start"
   });
 
   registerButton({
@@ -1194,8 +2311,6 @@ function drawGrid(player) {
     }
   }
 
-  drawPendingPlacement();
-
   drawText("Water", GRID_X + GRID_WIDTH / 2, GRID_Y - 42, {
     font: "700 14px 'Trebuchet MS', sans-serif",
     color: "#8dd5ff",
@@ -1307,6 +2422,8 @@ function drawGameScreen() {
     disabled: player.passedThisRound
   });
 
+  drawPendingPlacement();
+
   if (state.passOverlay) {
     drawPassOverlay();
   }
@@ -1320,62 +2437,174 @@ function drawGameScreen() {
   }
 }
 
+function drawArrivalCard(result, x, y, w, h) {
+  const phaseColor = state.currentSeasonPhase === "early"
+    ? "#6fbf73"
+    : state.currentSeasonPhase === "mid"
+      ? "#f3b04f"
+      : "#d97f56";
+
+  drawRoundedRect(x, y, w, h, 14, "rgba(255, 248, 231, 0.96)", "rgba(24, 49, 83, 0.28)", 2);
+  drawRoundedRect(x, y, w, 24, 14, phaseColor, phaseColor, 1);
+  drawText(result.card.name, x + 10, y + 42, {
+    font: "700 14px 'Trebuchet MS', sans-serif",
+    color: NAVY
+  });
+  drawText(ARRIVAL_PHASE_LABELS[result.card.phase], x + w - 10, y + 14, {
+    font: "700 11px 'Trebuchet MS', sans-serif",
+    color: "#10233f",
+    align: "right",
+    baseline: "middle"
+  });
+  drawWrappedText(result.card.requirementsText, x + w / 2, y + 58, w - 22, 18, {
+    font: "12px 'Trebuchet MS', sans-serif",
+    color: NAVY_DARK,
+    align: "center"
+  });
+  drawWrappedText(`Bonus: ${result.card.bonusText}`, x + w / 2, y + 98, w - 22, 15, {
+    font: "11px 'Trebuchet MS', sans-serif",
+    color: "#21456f",
+    align: "center"
+  });
+
+  if (result.card.noteText) {
+    drawWrappedText(result.card.noteText, x + w / 2, y + 126, w - 24, 14, {
+      font: "10px 'Trebuchet MS', sans-serif",
+      color: "#6b4d2f",
+      align: "center"
+    });
+  }
+
+  drawText(`Base $${result.card.baseIncome}`, x + 10, y + h - 12, {
+    font: "700 12px 'Trebuchet MS', sans-serif",
+    color: NAVY
+  });
+
+  result.matches.forEach((match, index) => {
+    drawRoundedRect(x + 12 + index * 30, y + h - 34, 24, 18, 9, NAVY, "#9ec7f3", 1);
+    drawText(match.playerInitials, x + 24 + index * 30, y + h - 25, {
+      font: "700 10px 'Trebuchet MS', sans-serif",
+      color: CREAM,
+      align: "center",
+      baseline: "middle"
+    });
+  });
+}
+
+function drawArrivalSummary() {
+  drawRoundedRect(690, 140, 214, 288, 18, "rgba(15, 20, 44, 0.88)", "rgba(255, 216, 155, 0.28)", 2);
+  drawText("Arrival Summary", 797, 172, {
+    font: "700 24px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+
+  state.arrivalPhaseResults.playerSummaries.forEach((summary, index) => {
+    const top = 208 + index * 52;
+    drawRoundedRect(708, top, 178, 40, 12, "rgba(255, 248, 231, 0.1)", "rgba(255, 216, 155, 0.18)", 1);
+    drawText(summary.playerName, 722, top + 16, {
+      font: "700 16px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb"
+    });
+    drawText(`${summary.matchedCards} cards`, 722, top + 34, {
+      font: "12px 'Trebuchet MS', sans-serif",
+      color: "#d8cee0"
+    });
+    drawText(`+$${summary.income}`, 872, top + 22, {
+      font: "700 20px 'Trebuchet MS', sans-serif",
+      color: "#ffe6b9",
+      align: "right",
+      baseline: "middle"
+    });
+  });
+}
+
 function drawSeasonScreen() {
-  drawRoundedRect(90, 62, 780, 404, 28, "rgba(15, 20, 44, 0.9)", "rgba(255, 216, 155, 0.3)", 3);
+  if (!state.arrivalPhaseResults.cardResults) {
+    revealArrivalCardsForPhase(state.currentSeasonPhase);
+  }
+
+  drawRoundedRect(34, 48, 892, 454, 28, "rgba(15, 20, 44, 0.9)", "rgba(255, 216, 155, 0.3)", 3);
   drawText("Camping Season", CANVAS_WIDTH / 2, 112, {
     font: "700 42px 'Trebuchet MS', sans-serif",
     color: "#ffe6b9",
     align: "center"
   });
-  drawWrappedText(
-    "Memorial Day has come! Time to host campers.",
-    CANVAS_WIDTH / 2,
-    154,
-    520,
-    34,
-    {
-      font: "28px 'Trebuchet MS', sans-serif",
-      color: "#fff7eb",
-      align: "center"
-    }
-  );
 
-  const sections = [
-    { label: "Early Summer", x: 126 },
-    { label: "Mid Summer", x: 384 },
-    { label: "Late Summer", x: 642 }
+  const phases = [
+    { key: "early", label: "Early Summer", x: 64 },
+    { key: "mid", label: "Mid Summer", x: 264 },
+    { key: "late", label: "Late Summer", x: 464 }
   ];
 
-  sections.forEach((section) => {
-    drawRoundedRect(section.x, 240, 192, 170, 20, "rgba(255, 248, 231, 0.12)", "rgba(255, 216, 155, 0.28)", 2);
-    drawText(section.label, section.x + 96, 274, {
-      font: "700 28px 'Trebuchet MS', sans-serif",
-      color: "#ffe6b9",
+  phases.forEach((phase) => {
+    const active = state.currentSeasonPhase === phase.key;
+    drawRoundedRect(
+      phase.x,
+      204,
+      184,
+      38,
+      14,
+      active ? "rgba(255, 179, 71, 0.28)" : "rgba(255, 248, 231, 0.08)",
+      active ? "#ffb347" : "rgba(255, 216, 155, 0.22)",
+      2
+    );
+    drawText(phase.label, phase.x + 92, 224, {
+      font: "700 20px 'Trebuchet MS', sans-serif",
+      color: active ? "#fff7eb" : "#d8cee0",
       align: "center"
     });
-    drawWrappedText(
-      "Season actions will go here later.",
-      section.x + 96,
-      320,
-      150,
-      28,
-      {
-        font: "20px 'Trebuchet MS', sans-serif",
-        color: "#d8cee0",
-        align: "center"
-      }
-    );
+  });
+
+  drawText("Campers Arriving", 332, 278, {
+    font: "700 28px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+
+  state.arrivalPhaseResults.cardResults.forEach((result, index) => {
+    const col = index % 3;
+    const row = Math.floor(index / 3);
+    drawArrivalCard(result, 54 + col * 204, 296 + row * 102, 188, 94);
+  });
+
+  drawArrivalSummary();
+
+  registerButton({
+    x: 716,
+    y: 84,
+    w: 170,
+    h: 40,
+    label: "Next Phase",
+    action: "advance-season-phase",
+    variant: "primary"
   });
 
   registerButton({
-    x: 400,
-    y: 432,
-    w: 160,
+    x: 716,
+    y: 450,
+    w: 170,
     h: 42,
     label: "Main Menu",
     action: "menu",
     variant: "secondary"
   });
+
+  if (state.memorialDayOverlay) {
+    drawMemorialDayOverlay();
+  }
+
+  if (state.laborDayOverlay) {
+    drawLaborDayOverlay();
+  }
+
+  if (state.exitOverlay) {
+    drawExitOverlay();
+  }
+
+  if (state.gameOverOverlay) {
+    drawGameOverOverlay();
+  }
 }
 
 function drawPassOverlay() {
@@ -1505,6 +2734,141 @@ function drawPassConfirmOverlay() {
   });
 }
 
+function drawLaborDayOverlay() {
+  ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  drawRoundedRect(180, 126, 600, 270, 24, "rgba(15, 20, 44, 0.96)", "rgba(255, 216, 155, 0.35)", 3);
+  drawText("Labor Day", CANVAS_WIDTH / 2, 190, {
+    font: "700 38px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+  drawWrappedText(
+    "We have now passed Labor Day. Time to switch back to upgrades our parks in the off season.",
+    CANVAS_WIDTH / 2,
+    232,
+    460,
+    40,
+    {
+      font: "26px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      align: "center"
+    }
+  );
+
+  registerButton({
+    x: 400,
+    y: 344,
+    w: 160,
+    h: 42,
+    label: "OK",
+    action: "begin-office-season",
+    variant: "primary"
+  });
+}
+
+function drawMemorialDayOverlay() {
+  ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  drawRoundedRect(180, 136, 600, 240, 24, "rgba(15, 20, 44, 0.96)", "rgba(255, 216, 155, 0.35)", 3);
+  drawText("Memorial Day", CANVAS_WIDTH / 2, 190, {
+    font: "700 38px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+  drawWrappedText(
+    "Memorial Day has come! Time to host campers.",
+    CANVAS_WIDTH / 2,
+    232,
+    460,
+    36,
+    {
+      font: "28px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      align: "center"
+    }
+  );
+
+  registerButton({
+    x: 400,
+    y: 322,
+    w: 160,
+    h: 42,
+    label: "OK",
+    action: "close-memorial-day-overlay",
+    variant: "primary"
+  });
+}
+
+function drawGameOverOverlay() {
+  ctx.fillStyle = "rgba(6, 9, 20, 0.78)";
+  ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  drawRoundedRect(180, 90, 600, 340, 24, "rgba(15, 20, 44, 0.97)", "rgba(255, 216, 155, 0.35)", 3);
+  drawText("Game Over", CANVAS_WIDTH / 2, 136, {
+    font: "700 40px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+  drawText(`${MAX_ROUNDS} years are complete.`, CANVAS_WIDTH / 2, 174, {
+    font: "26px 'Trebuchet MS', sans-serif",
+    color: "#fff7eb",
+    align: "center"
+  });
+
+  state.finalStandings.forEach((player, index) => {
+    const rowY = 208 + index * 34;
+    const topPlayer = index === 0;
+    drawRoundedRect(232, rowY, 496, 28, 12, topPlayer ? "rgba(255, 179, 71, 0.18)" : "rgba(255, 248, 231, 0.08)", topPlayer ? "#ffb347" : "rgba(255, 216, 155, 0.15)", 1);
+    if (topPlayer) {
+      ctx.fillStyle = "#ffcf70";
+      ctx.beginPath();
+      ctx.moveTo(248, rowY + 18);
+      ctx.lineTo(254, rowY + 8);
+      ctx.lineTo(260, rowY + 18);
+      ctx.lineTo(266, rowY + 6);
+      ctx.lineTo(272, rowY + 18);
+      ctx.lineTo(278, rowY + 10);
+      ctx.lineTo(284, rowY + 18);
+      ctx.lineTo(284, rowY + 24);
+      ctx.lineTo(248, rowY + 24);
+      ctx.closePath();
+      ctx.fill();
+    }
+    drawText(`${player.rank}. ${player.name}`, topPlayer ? 294 : 250, rowY + 18, {
+      font: "700 18px 'Trebuchet MS', sans-serif",
+      color: topPlayer ? "#ffe6b9" : "#fff7eb",
+      baseline: "middle"
+    });
+    if (topPlayer) {
+      drawText("Winner", 560, rowY + 18, {
+        font: "700 18px 'Trebuchet MS', sans-serif",
+        color: "#ffcf70",
+        align: "center",
+        baseline: "middle"
+      });
+    }
+    drawText(`$${player.cash}`, 706, rowY + 18, {
+      font: "700 18px 'Trebuchet MS', sans-serif",
+      color: "#ffe6b9",
+      align: "right",
+      baseline: "middle"
+    });
+  });
+
+  registerButton({
+    x: 360,
+    y: 382,
+    w: 240,
+    h: 40,
+    label: "Return To Main Menu",
+    action: "return-to-main-menu",
+    variant: "primary"
+  });
+}
+
 function draw() {
   state.uiButtons = [];
   state.inputBoxes = [];
@@ -1556,6 +2920,7 @@ function handleAction(button) {
   if (button.action === "play") {
     state.screen = "players";
     state.statusMessage = "";
+    state.playerSetupFocus = "input";
     return;
   }
 
@@ -1574,9 +2939,40 @@ function handleAction(button) {
     return;
   }
 
+  if (button.action === "advance-season-phase") {
+    advanceSeasonPhase();
+    return;
+  }
+
+  if (button.action === "begin-office-season") {
+    beginOfficeSeason();
+    return;
+  }
+
+  if (button.action === "return-to-main-menu") {
+    state.screen = "menu";
+    state.statusMessage = "";
+    state.selectedPiece = null;
+    state.pendingPlacement = null;
+    state.passOverlay = null;
+    state.passConfirmOverlay = false;
+    state.memorialDayOverlay = false;
+    state.laborDayOverlay = false;
+    state.gameOverOverlay = false;
+    state.finalStandings = [];
+    state.exitOverlay = false;
+    return;
+  }
+
+  if (button.action === "close-memorial-day-overlay") {
+    state.memorialDayOverlay = false;
+    return;
+  }
+
   if (button.action === "back") {
     state.screen = "menu";
     state.statusMessage = "";
+    state.playerSetupFocus = "input";
     return;
   }
 
@@ -1596,7 +2992,7 @@ function handleAction(button) {
   }
 
   if (button.action === "menu") {
-    if (state.screen === "game") {
+    if (state.screen === "game" || state.screen === "season") {
       state.exitOverlay = true;
       return;
     }
@@ -1608,6 +3004,10 @@ function handleAction(button) {
     state.passOverlay = null;
     state.passConfirmOverlay = false;
     state.exitOverlay = false;
+    state.memorialDayOverlay = false;
+    state.laborDayOverlay = false;
+    state.gameOverOverlay = false;
+    state.finalStandings = [];
     return;
   }
 
@@ -1643,6 +3043,10 @@ function handleAction(button) {
     state.pendingPlacement = null;
     state.passOverlay = null;
     state.passConfirmOverlay = false;
+    state.memorialDayOverlay = false;
+    state.laborDayOverlay = false;
+    state.gameOverOverlay = false;
+    state.finalStandings = [];
     state.exitOverlay = false;
     return;
   }
@@ -1712,12 +3116,13 @@ canvas.addEventListener("pointerdown", (event) => {
     const clickedInput = state.inputBoxes.find((inputBox) => pointInRect(point.x, point.y, inputBox));
     if (clickedInput) {
       state.activeInputIndex = clickedInput.index;
+      state.playerSetupFocus = "input";
       state.statusMessage = "";
       return;
     }
   }
 
-  const clickedButton = state.uiButtons.find((button) => pointInRect(point.x, point.y, button));
+  const clickedButton = [...state.uiButtons].reverse().find((button) => pointInRect(point.x, point.y, button));
   if (clickedButton) {
     handleAction(clickedButton);
     return;
@@ -1753,6 +3158,10 @@ canvas.addEventListener("pointerdown", (event) => {
       return;
     }
   }
+
+  if (state.screen === "season" && (state.memorialDayOverlay || state.laborDayOverlay || state.gameOverOverlay || state.exitOverlay)) {
+    return;
+  }
 });
 
 window.addEventListener("keydown", (event) => {
@@ -1762,18 +3171,42 @@ window.addEventListener("keydown", (event) => {
 
   if (event.key === "Tab") {
     event.preventDefault();
-    const direction = event.shiftKey ? -1 : 1;
-    state.activeInputIndex =
-      (state.activeInputIndex + direction + state.players.length) % state.players.length;
+    if (event.shiftKey) {
+      if (state.playerSetupFocus === "start") {
+        state.playerSetupFocus = "input";
+        state.activeInputIndex = Math.max(0, state.players.length - 1);
+      } else {
+        state.activeInputIndex =
+          (state.activeInputIndex - 1 + state.players.length) % state.players.length;
+      }
+    } else if (state.playerSetupFocus === "input" && state.activeInputIndex === state.players.length - 1) {
+      state.playerSetupFocus = "start";
+    } else if (state.playerSetupFocus === "start") {
+      state.playerSetupFocus = "input";
+      state.activeInputIndex = 0;
+    } else {
+      state.activeInputIndex = (state.activeInputIndex + 1) % state.players.length;
+    }
     return;
   }
 
   if (event.key === "Enter") {
     event.preventDefault();
+    if (state.playerSetupFocus === "start") {
+      startGameFromSetup();
+      return;
+    }
+
+    const current = (state.players[state.activeInputIndex] || "").trim();
+    if (state.activeInputIndex === state.players.length - 1 && current && state.players.length < MAX_PLAYERS) {
+      addPlayer();
+      return;
+    }
+
     if (state.activeInputIndex < state.players.length - 1) {
       state.activeInputIndex += 1;
     } else {
-      startGameFromSetup();
+      state.playerSetupFocus = "start";
     }
     return;
   }
@@ -1795,6 +3228,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  state.playerSetupFocus = "input";
   state.players[state.activeInputIndex] = current + event.key;
   state.statusMessage = "";
 });
