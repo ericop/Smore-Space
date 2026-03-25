@@ -810,6 +810,8 @@ const state = {
   currentSeasonPhase: "early",
   arrivalPhaseCards: [],
   arrivalPhaseResults: [],
+  sideHustlePhaseResults: [],
+  adjacencyPhaseResults: [],
   activePlayerIndex: 0,
   activeInputIndex: 0,
   playerSetupFocus: "input",
@@ -823,6 +825,9 @@ const state = {
   finalStandings: [],
   exitOverlay: false,
   roundNumber: 1,
+  focusedButtonAction: null,
+  focusedModalButtonIndex: 0,
+  focusedPieceSlotIndex: 0,
   uiButtons: [],
   inputBoxes: [],
   pieceSlots: [],
@@ -958,9 +963,14 @@ function resetGameForPlayers(names) {
   state.finalStandings = [];
   state.exitOverlay = false;
   state.roundNumber = 1;
+  state.focusedButtonAction = null;
+  state.focusedModalButtonIndex = 0;
+  state.focusedPieceSlotIndex = 0;
   state.currentSeasonPhase = "early";
   state.arrivalPhaseCards = [];
   state.arrivalPhaseResults = [];
+  state.sideHustlePhaseResults = [];
+  state.adjacencyPhaseResults = [];
   state.statusMessage = `${names[0]}'s turn. Pick from the shared market.`;
   state.screen = "game";
 }
@@ -997,6 +1007,184 @@ function registerButton(button) {
     align: "center",
     baseline: "middle"
   });
+}
+
+function getActiveOverlayConfig() {
+  if (state.gameOverOverlay) {
+    return {
+      actions: ["return-to-main-menu"],
+      defaultAction: "return-to-main-menu",
+      cancelAction: null
+    };
+  }
+
+  if (state.memorialDayOverlay) {
+    return {
+      actions: ["close-memorial-day-overlay"],
+      defaultAction: "close-memorial-day-overlay",
+      cancelAction: "close-memorial-day-overlay"
+    };
+  }
+
+  if (state.laborDayOverlay) {
+    return {
+      actions: ["begin-office-season"],
+      defaultAction: "begin-office-season",
+      cancelAction: null
+    };
+  }
+
+  if (state.exitOverlay) {
+    // Default to staying in the game so Space/Enter does not accidentally quit.
+    return {
+      actions: ["close-exit-overlay", "confirm-exit-game"],
+      defaultAction: "close-exit-overlay",
+      cancelAction: "close-exit-overlay"
+    };
+  }
+
+  if (state.passConfirmOverlay) {
+    // Default to keeping the player in build mode; passing is the more destructive choice.
+    return {
+      actions: ["close-pass-confirm", "confirm-pass-round"],
+      defaultAction: "close-pass-confirm",
+      cancelAction: "close-pass-confirm"
+    };
+  }
+
+  if (state.passOverlay) {
+    return {
+      actions: ["close-pass-overlay"],
+      defaultAction: "close-pass-overlay",
+      cancelAction: "close-pass-overlay"
+    };
+  }
+
+  return null;
+}
+
+function ensureOverlayFocus() {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay) {
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
+    return;
+  }
+
+  const actionIndex = overlay.actions.indexOf(state.focusedButtonAction);
+  if (actionIndex >= 0) {
+    state.focusedModalButtonIndex = actionIndex;
+    return;
+  }
+
+  state.focusedModalButtonIndex = Math.max(0, overlay.actions.indexOf(overlay.defaultAction));
+  state.focusedButtonAction = overlay.actions[state.focusedModalButtonIndex] || overlay.defaultAction;
+}
+
+function getActiveOverlayButtons() {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay) {
+    return [];
+  }
+
+  return overlay.actions
+    .map((action) => state.uiButtons.find((button) => button.action === action && !button.disabled))
+    .filter(Boolean);
+}
+
+function setFocusedModalButtonIndex(index) {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay || !overlay.actions.length) {
+    return;
+  }
+
+  const normalizedIndex = (index + overlay.actions.length) % overlay.actions.length;
+  state.focusedModalButtonIndex = normalizedIndex;
+  state.focusedButtonAction = overlay.actions[normalizedIndex];
+}
+
+function cycleOverlayButtonFocus(direction) {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay || overlay.actions.length <= 1) {
+    return;
+  }
+
+  ensureOverlayFocus();
+  setFocusedModalButtonIndex(state.focusedModalButtonIndex + direction);
+}
+
+function getDefaultActionForCurrentOverlay() {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay) {
+    return null;
+  }
+  ensureOverlayFocus();
+  return state.focusedButtonAction || overlay.defaultAction;
+}
+
+function triggerButtonAction(actionName) {
+  if (!actionName) {
+    return false;
+  }
+
+  const button = state.uiButtons.find((entry) => entry.action === actionName && !entry.disabled) || { action: actionName };
+  handleAction(button);
+  return true;
+}
+
+function getAvailablePieceSlots() {
+  const slots = [];
+  state.sharedMarket.dominoes.forEach((piece, slotIndex) => {
+    if (piece) {
+      slots.push({ piece, groupName: "dominoes", slotIndex });
+    }
+  });
+  state.sharedMarket.complex.forEach((piece, slotIndex) => {
+    if (piece) {
+      slots.push({ piece, groupName: "complex", slotIndex });
+    }
+  });
+  return slots;
+}
+
+function ensureFocusedPieceSlot() {
+  const slots = getAvailablePieceSlots();
+  if (!slots.length) {
+    state.focusedPieceSlotIndex = 0;
+    return null;
+  }
+
+  if (state.focusedPieceSlotIndex < 0 || state.focusedPieceSlotIndex >= slots.length) {
+    state.focusedPieceSlotIndex = 0;
+  }
+
+  return slots[state.focusedPieceSlotIndex];
+}
+
+function cycleFocusedPieceSlot(direction) {
+  const slots = getAvailablePieceSlots();
+  if (!slots.length) {
+    return null;
+  }
+
+  state.focusedPieceSlotIndex = (state.focusedPieceSlotIndex + direction + slots.length) % slots.length;
+  return slots[state.focusedPieceSlotIndex];
+}
+
+function selectFocusedPieceSlot() {
+  const slot = ensureFocusedPieceSlot();
+  if (!slot) {
+    return false;
+  }
+
+  state.selectedPiece = {
+    groupName: slot.groupName,
+    slotIndex: slot.slotIndex,
+    piece: slot.piece
+  };
+  state.pendingPlacement = null;
+  state.statusMessage = `${getCurrentPlayerState().name} selected ${BASE_TYPE_LABELS[slot.piece.squareType]} for $${getPieceCost(slot.piece)}.`;
+  return true;
 }
 
 function drawInputBox(index, x, y, w, h) {
@@ -1414,25 +1602,502 @@ function evaluateArrivalPhase(cards) {
   };
 }
 
+function getSpecificTypeCells(player, squareTypes) {
+  return getAllOccupiedCells(player).filter((cell) => squareTypes.includes(cell.type));
+}
+
+function getNearbySiteCountForAmenity(player, row, col, sitePredicate, distance = 1) {
+  return getNearbyCells(row, col, distance).filter((cell) => {
+    const type = getCellType(player, cell.row, cell.col);
+    return type && isAnySiteType(type) && sitePredicate({
+      row: cell.row,
+      col: cell.col,
+      type,
+      normalizedType: normalizeSquareType(type)
+    });
+  }).length;
+}
+
+function getNearbyAmenityCount(player, row, col, amenityList, distance = 1) {
+  return getNearbyCells(row, col, distance).filter((cell) => {
+    const type = getCellType(player, cell.row, cell.col);
+    return amenityList.some((amenity) => cellMatchesAmenity(type, amenity));
+  }).length;
+}
+
+function getLakeAccessSiteCountByTypes(player, siteTypes) {
+  return getSiteCells(player).filter((cell) => siteTypes.includes(normalizeSquareType(cell.type)) && isLakeAccessCell(cell.row, cell.col)).length;
+}
+
+function isFamilyFriendlySite(player, cell) {
+  return (
+    isSiteType(cell.type, "tent") ||
+    isSiteType(cell.type, "cabin") ||
+    hasNearbyAmenity(player, cell.row, cell.col, ["playground", "beach"])
+  );
+}
+
+function getFamilyFriendlySiteCount(player) {
+  return getSiteCells(player).filter((cell) => isFamilyFriendlySite(player, cell)).length;
+}
+
+function getOrthogonalAdjacentMatches(player, row, col, predicate) {
+  return getOrthogonalNeighbors(row, col)
+    .map((neighbor) => {
+      const type = getCellType(player, neighbor.row, neighbor.col);
+      if (!type) {
+        return null;
+      }
+      return {
+        row: neighbor.row,
+        col: neighbor.col,
+        type,
+        normalizedType: normalizeSquareType(type)
+      };
+    })
+    .filter((cell) => cell && predicate(cell));
+}
+
+function getNearbyMatches(player, row, col, distance, predicate) {
+  return getNearbyCells(row, col, distance)
+    .map((neighbor) => {
+      const type = getCellType(player, neighbor.row, neighbor.col);
+      if (!type) {
+        return null;
+      }
+      return {
+        row: neighbor.row,
+        col: neighbor.col,
+        type,
+        normalizedType: normalizeSquareType(type)
+      };
+    })
+    .filter((cell) => cell && predicate(cell));
+}
+
+function countSitesNearAmenity(player, amenityType, siteTypes, distance = 2) {
+  const matchedSiteKeys = new Set();
+  getAmenityCells(player, amenityType).forEach((amenityCell) => {
+    getNearbyMatches(player, amenityCell.row, amenityCell.col, distance, (cell) =>
+      isAnySiteType(cell.type) && siteTypes.includes(normalizeSquareType(cell.type))
+    ).forEach((siteCell) => {
+      matchedSiteKeys.add(`${siteCell.row},${siteCell.col}`);
+    });
+  });
+  return matchedSiteKeys.size;
+}
+
+function getAmenityDemandScore(player, amenityType) {
+  const demandCells = getAmenityCells(player, amenityType).length
+    ? getAmenityCells(player, amenityType)
+    : getSpecificTypeCells(player, [amenityType]);
+  if (!demandCells.length) {
+    return 0;
+  }
+
+  return Math.max(...demandCells.map((cell) => {
+    const trafficAmenities = getNearbyAmenityCount(player, cell.row, cell.col, ["bathroom", "shower", "playground", "sports_field", "beach"], 2);
+    const nearbySites = getNearbySiteCountForAmenity(player, cell.row, cell.col, () => true, 2);
+    return trafficAmenities + Math.floor(nearbySites / 2);
+  }));
+}
+
+function evaluateSingleSideHustle(player, hustleType) {
+  if (hustleType === "ice_cream") {
+    const sources = getAmenityCells(player, "ice_cream");
+    if (sources.length === 0) {
+      return null;
+    }
+    const nearbyDemand = Math.max(...sources.map((cell) =>
+      getNearbySiteCountForAmenity(player, cell.row, cell.col, (site) => isFamilyFriendlySite(player, site), 2)
+    ));
+    const cappedDemand = Math.min(3, nearbyDemand);
+    const reasons = [];
+    let income = cappedDemand;
+    if (cappedDemand > 0) {
+      reasons.push(`${cappedDemand} nearby family sites`);
+    }
+    if (hasAmenity(player, "playground")) {
+      income += 1;
+      reasons.push("playground bonus");
+    }
+    return { type: "ice_cream", label: "Ice Cream", income, reasons };
+  }
+
+  if (hustleType === "firewood") {
+    const sources = getAmenityCells(player, "firewood");
+    if (sources.length === 0) {
+      return null;
+    }
+    const nearbyDemand = Math.max(...sources.map((cell) =>
+      getNearbySiteCountForAmenity(player, cell.row, cell.col, (site) => ["rustic", "tent", "cabin"].includes(normalizeSquareType(site.type)), 2)
+    ));
+    const cappedDemand = Math.min(4, nearbyDemand);
+    const reasons = [];
+    let income = cappedDemand;
+    if (cappedDemand > 0) {
+      reasons.push(`${cappedDemand} campfire-friendly sites`);
+    }
+    if (getSiteCells(player).some((cell) => ["rustic", "tent", "cabin"].includes(normalizeSquareType(cell.type)) && isForestAdjacentCell(cell.row, cell.col))) {
+      income += 1;
+      reasons.push("forest edge bonus");
+    }
+    return { type: "firewood", label: "Firewood", income: Math.min(5, income), reasons };
+  }
+
+  if (hustleType === "vending") {
+    const sources = getAmenityCells(player, "vending");
+    if (sources.length === 0) {
+      return null;
+    }
+    const nearbyTraffic = Math.max(...sources.map((cell) =>
+      getNearbyAmenityCount(player, cell.row, cell.col, ["bathroom", "shower", "sports_field", "playground", "beach", "boat_ramp"], 2)
+    ));
+    const income = Math.min(3, nearbyTraffic);
+    return { type: "vending", label: "Vending", income, reasons: income > 0 ? [`${income} nearby traffic clusters`] : [] };
+  }
+
+  if (hustleType === "bait_gear") {
+    const sources = getAmenityCells(player, "bait_gear");
+    if (sources.length === 0) {
+      return null;
+    }
+    let income = Math.min(3, getLakeAccessSiteCountByTypes(player, ["tent", "rv", "rustic", "cabin"]));
+    const reasons = income > 0 ? [`${income} lake-access sites`] : [];
+    if (hasAmenity(player, "boat_ramp")) {
+      income += 1;
+      reasons.push("boat ramp bonus");
+    }
+    return { type: "bait_gear", label: "Bait & Gear", income, reasons };
+  }
+
+  if (hustleType === "rentals") {
+    const sources = getAmenityCells(player, "rentals");
+    if (sources.length === 0) {
+      return null;
+    }
+    let income = Math.min(3, getLakeAccessSiteCountByTypes(player, ["tent", "rv"]));
+    const reasons = income > 0 ? [`${income} lake-access tent/RV sites`] : [];
+    if (hasAmenity(player, "beach") || hasAmenity(player, "boat_ramp")) {
+      income += 1;
+      reasons.push("water recreation bonus");
+    }
+    return { type: "rentals", label: "Rentals", income, reasons };
+  }
+
+  if (hustleType === "camp_store") {
+    const sources = getSpecificTypeCells(player, ["camp_store"]);
+    if (sources.length === 0) {
+      return null;
+    }
+    const income = Math.min(3, Math.floor(countAnySites(player) / 3));
+    return { type: "camp_store", label: "Camp Store", income, reasons: income > 0 ? [`${countAnySites(player)} occupied sites`] : [] };
+  }
+
+  if (hustleType === "boat_ramp") {
+    const sources = getAmenityCells(player, "boat_ramp");
+    if (sources.length === 0) {
+      return null;
+    }
+    let income = Math.min(3, getLakeAccessSiteCountByTypes(player, ["tent", "rv", "rustic", "cabin"]));
+    const reasons = income > 0 ? [`${income} lake-access sites`] : [];
+    if (hasAmenity(player, "rentals") || hasAmenity(player, "bait_gear")) {
+      income += 1;
+      reasons.push("dock support combo");
+    }
+    return { type: "boat_ramp", label: "Boat Ramp", income, reasons };
+  }
+
+  return null;
+}
+
+function evaluateSideHustlesForPlayer(player) {
+  const hustleTypes = ["ice_cream", "firewood", "vending", "bait_gear", "rentals", "camp_store", "boat_ramp"];
+  const hustles = hustleTypes
+    .map((hustleType) => evaluateSingleSideHustle(player, hustleType))
+    .filter((hustle) => hustle && hustle.income > 0);
+
+  return {
+    playerName: player.name,
+    totalIncome: hustles.reduce((total, hustle) => total + hustle.income, 0),
+    hustles
+  };
+}
+
+const ADJACENCY_RULES = [
+  {
+    type: "forest_tents",
+    label: "Forest Tents",
+    evaluate(player) {
+      const qualifyingTents = getSiteCells(player).filter((cell) =>
+        isSiteType(cell.type, "tent") && (isForestAdjacentCell(cell.row, cell.col) || hasNearbyAmenity(player, cell.row, cell.col, ["forest_path"]))
+      );
+      const income = Math.min(3, qualifyingTents.length);
+      return {
+        type: "forest_tents",
+        label: "Forest Tents",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${income} tent sites by the woods`] : []
+      };
+    }
+  },
+  {
+    type: "lake_cabins",
+    label: "Lake Cabins",
+    evaluate(player) {
+      const qualifyingCabins = getSiteCells(player).filter((cell) =>
+        isSiteType(cell.type, "cabin") && (isLakeAccessCell(cell.row, cell.col) || hasNearbyAmenity(player, cell.row, cell.col, ["beach"]))
+      );
+      const income = Math.min(4, qualifyingCabins.length * 2);
+      return {
+        type: "lake_cabins",
+        label: "Lake Cabins",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${qualifyingCabins.length} scenic cabin sites`] : []
+      };
+    }
+  },
+  {
+    type: "rv_support",
+    label: "RV Support",
+    evaluate(player) {
+      const supportedRvs = getSiteCells(player).filter((cell) =>
+        isSiteType(cell.type, "rv") &&
+        getNearbyMatches(player, cell.row, cell.col, 2, (neighbor) =>
+          ["bathroom", "shower", "water_station", "septic_dump"].includes(normalizeSquareType(neighbor.type))
+        ).length > 0
+      );
+      const income = Math.min(4, supportedRvs.length);
+      return {
+        type: "rv_support",
+        label: "RV Support",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${income} RV sites near utility support`] : []
+      };
+    }
+  },
+  {
+    type: "family_zone",
+    label: "Family Zone",
+    evaluate(player) {
+      const qualifyingPlaygrounds = getAmenityCells(player, "playground").filter((cell) =>
+        getNearbySiteCountForAmenity(player, cell.row, cell.col, (site) => ["tent", "cabin"].includes(normalizeSquareType(site.type)), 2) >= 2
+      );
+      const income = Math.min(3, qualifyingPlaygrounds.length);
+      return {
+        type: "family_zone",
+        label: "Family Zone",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${income} playground hubs serving families`] : []
+      };
+    }
+  },
+  {
+    type: "boating_hub",
+    label: "Boating Hub",
+    evaluate(player) {
+      const hubs = getSpecificTypeCells(player, ["boat_ramp_dock"]);
+      let income = 0;
+      let comboBonus = 0;
+      hubs.forEach((cell) => {
+        const nearbyLakeSites = getNearbyMatches(player, cell.row, cell.col, 2, (neighbor) =>
+          isAnySiteType(neighbor.type) && isLakeAccessCell(neighbor.row, neighbor.col)
+        ).length;
+        if (nearbyLakeSites >= 2) {
+          income += 1;
+          if (getNearbyMatches(player, cell.row, cell.col, 2, (neighbor) => ["bait_gear", "rentals"].includes(normalizeSquareType(neighbor.type))).length > 0) {
+            comboBonus += 1;
+          }
+        }
+      });
+      const totalIncome = Math.min(4, income + comboBonus);
+      const reasons = [];
+      if (income > 0) {
+        reasons.push(`${income} active dock hubs`);
+      }
+      if (comboBonus > 0) {
+        reasons.push(`${Math.min(comboBonus, Math.max(0, 4 - income))} dock support bonus`);
+      }
+      return {
+        type: "boating_hub",
+        label: "Boating Hub",
+        income: totalIncome,
+        penalties: 0,
+        reasons
+      };
+    }
+  },
+  {
+    type: "event_cluster",
+    label: "Event Cluster",
+    evaluate(player) {
+      const eventCells = getSpecificTypeCells(player, ["education_pavilion", "activities_pavilion"]);
+      const activeClusters = eventCells.filter((cell) =>
+        getNearbySiteCountForAmenity(player, cell.row, cell.col, (site) => ["tent", "cabin"].includes(normalizeSquareType(site.type)), 2) >= 2
+      );
+      const income = Math.min(3, activeClusters.length);
+      return {
+        type: "event_cluster",
+        label: "Event Cluster",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${income} event spaces near campers`] : []
+      };
+    }
+  },
+  {
+    type: "camp_store_traffic",
+    label: "Store Traffic",
+    evaluate(player) {
+      const trafficCells = [
+        ...getSpecificTypeCells(player, ["camp_store"]),
+        ...getSpecificTypeCells(player, ["vending"])
+      ];
+      const activeTraffic = trafficCells.filter((cell) => getAmenityDemandScore(player, normalizeSquareType(cell.type)) >= 2);
+      const income = Math.min(3, activeTraffic.length);
+      return {
+        type: "camp_store_traffic",
+        label: "Store Traffic",
+        income,
+        penalties: 0,
+        reasons: income > 0 ? [`${income} high-traffic retail spots`] : []
+      };
+    }
+  },
+  {
+    type: "noisy_mix",
+    label: "Noisy Mix",
+    evaluate(player) {
+      const noisyRvs = getSiteCells(player).filter((cell) =>
+        isSiteType(cell.type, "rv") && hasAdjacentSiteType(player, cell.row, cell.col, "tent")
+      );
+      const penalties = Math.min(3, noisyRvs.length);
+      return {
+        type: "noisy_mix",
+        label: "Noisy Mix",
+        income: 0,
+        penalties,
+        reasons: penalties > 0 ? [`${penalties} RV sites crowding tents`] : []
+      };
+    }
+  },
+  {
+    type: "quiet_cabin_penalty",
+    label: "Quiet Cabin Conflict",
+    evaluate(player) {
+      const scenicCabins = getSiteCells(player).filter((cell) => isSiteType(cell.type, "cabin") && isScenicSite(player, cell.row, cell.col));
+      const penalties = Math.min(2, scenicCabins.filter((cell) =>
+        !isIsolatedSite(player, cell.row, cell.col) &&
+        getOrthogonalAdjacentMatches(player, cell.row, cell.col, (neighbor) =>
+          ["field_sports", "recreation_field", "playground"].includes(normalizeSquareType(neighbor.type))
+        ).length > 0
+      ).length);
+      return {
+        type: "quiet_cabin_penalty",
+        label: "Quiet Cabin Conflict",
+        income: 0,
+        penalties,
+        reasons: penalties > 0 ? [`${penalties} scenic cabins next to noisy zones`] : []
+      };
+    }
+  },
+  {
+    type: "service_gap",
+    label: "Service Gap",
+    evaluate(player) {
+      const lowServiceSites = getSiteCells(player).filter((cell) =>
+        ["tent", "rustic"].includes(normalizeSquareType(cell.type)) &&
+        getNearbyMatches(player, cell.row, cell.col, 2, (neighbor) => ["bathroom", "shower"].includes(normalizeSquareType(neighbor.type))).length === 0
+      );
+      let penalties = 0;
+      if (lowServiceSites.length >= 4) {
+        penalties = 2;
+      } else if (lowServiceSites.length >= 2) {
+        penalties = 1;
+      }
+      return {
+        type: "service_gap",
+        label: "Service Gap",
+        income: 0,
+        penalties,
+        reasons: penalties > 0 ? [`${lowServiceSites.length} tent/rustic sites lack support`] : []
+      };
+    }
+  }
+];
+
+function evaluateAdjacencyRule(player, rule) {
+  const result = rule.evaluate(player) || {};
+  const income = Math.max(0, result.income || 0);
+  const penalties = Math.max(0, result.penalties || 0);
+  return {
+    type: result.type || rule.type,
+    label: result.label || rule.label,
+    income,
+    penalties,
+    netIncome: income - penalties,
+    reasons: result.reasons || []
+  };
+}
+
+function evaluateAdjacencyForPlayer(player) {
+  const results = ADJACENCY_RULES
+    .map((rule) => evaluateAdjacencyRule(player, rule))
+    .filter((result) => result.income > 0 || result.penalties > 0);
+
+  const totalIncome = results.reduce((total, result) => total + result.income, 0);
+  const totalPenalty = results.reduce((total, result) => total + result.penalties, 0);
+
+  return {
+    playerName: player.name,
+    totalIncome,
+    totalPenalty,
+    netIncome: totalIncome - totalPenalty,
+    results
+  };
+}
+
 function revealArrivalCardsForPhase(phase) {
   const deck = buildArrivalPhaseDeck(phase);
   const revealedCards = deck.slice(0, 6);
   state.currentSeasonPhase = phase;
   state.arrivalPhaseCards = revealedCards;
   state.arrivalPhaseResults = evaluateArrivalPhase(revealedCards);
+  state.sideHustlePhaseResults = state.playerStates.map((player) => evaluateSideHustlesForPlayer(player));
+  state.adjacencyPhaseResults = state.playerStates.map((player) => evaluateAdjacencyForPlayer(player));
   state.arrivalPhaseResults.playerSummaries.forEach((summary) => {
     const player = state.playerStates.find((entry) => entry.name === summary.playerName);
     if (player) {
       player.cash += summary.income;
     }
   });
+  state.sideHustlePhaseResults.forEach((summary) => {
+    const player = state.playerStates.find((entry) => entry.name === summary.playerName);
+    if (player) {
+      player.cash += summary.totalIncome;
+    }
+  });
+  state.adjacencyPhaseResults.forEach((summary) => {
+    const player = state.playerStates.find((entry) => entry.name === summary.playerName);
+    if (player) {
+      player.cash += summary.netIncome;
+    }
+  });
   console.log(`[arrival-phase] ${phase}`, revealedCards.map((card) => `${card.instanceId}:${card.name}`));
+  console.log(`[side-hustles] ${phase}`, state.sideHustlePhaseResults);
+  console.log(`[adjacency] ${phase}`, state.adjacencyPhaseResults);
 }
 
 function advanceSeasonPhase() {
   const currentIndex = ARRIVAL_PHASE_ORDER.indexOf(state.currentSeasonPhase);
   if (currentIndex === ARRIVAL_PHASE_ORDER.length - 1) {
     state.laborDayOverlay = true;
+    state.focusedButtonAction = "begin-office-season";
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
@@ -1452,6 +2117,8 @@ function showGameOverOverlay() {
   state.gameOverOverlay = true;
   state.memorialDayOverlay = false;
   state.laborDayOverlay = false;
+  state.focusedButtonAction = "return-to-main-menu";
+  state.focusedModalButtonIndex = 0;
   state.statusMessage = `${MAX_ROUNDS} years are complete. Final standings are ready.`;
 }
 
@@ -1473,6 +2140,8 @@ function beginOfficeSeason() {
     nextPlayerName: state.playerStates[0].name,
     message: `Off season begins. ${state.playerStates[0].name} goes first.`
   };
+  state.focusedButtonAction = "close-pass-overlay";
+  state.focusedModalButtonIndex = 0;
   state.passConfirmOverlay = false;
   state.memorialDayOverlay = false;
   state.laborDayOverlay = false;
@@ -1481,6 +2150,8 @@ function beginOfficeSeason() {
   state.currentSeasonPhase = "early";
   state.arrivalPhaseCards = [];
   state.arrivalPhaseResults = [];
+  state.sideHustlePhaseResults = [];
+  state.adjacencyPhaseResults = [];
   state.statusMessage = state.passOverlay.message;
   state.screen = "game";
 }
@@ -1528,6 +2199,8 @@ function startCampingSeason() {
   state.passConfirmOverlay = false;
   revealArrivalCardsForPhase("early");
   state.memorialDayOverlay = true;
+  state.focusedButtonAction = "close-memorial-day-overlay";
+  state.focusedModalButtonIndex = 0;
   state.statusMessage = "Memorial Day has come! Time to host campers.";
   state.screen = "season";
 }
@@ -1556,6 +2229,8 @@ function advanceTurn() {
     nextPlayerName,
     message: nextMessage
   };
+  state.focusedButtonAction = "close-pass-overlay";
+  state.focusedModalButtonIndex = 0;
 }
 
 function confirmPassForRound() {
@@ -2072,6 +2747,8 @@ function drawPieceCard(piece, x, y, w, h, groupName, slotIndex) {
     state.selectedPiece.groupName === groupName &&
     state.selectedPiece.slotIndex === slotIndex;
   const hovered = pointInRect(state.pointer.x, state.pointer.y, { x, y, w, h });
+  const focusedSlot = getAvailablePieceSlots()[state.focusedPieceSlotIndex];
+  const focused = !!focusedSlot && focusedSlot.groupName === groupName && focusedSlot.slotIndex === slotIndex;
 
   state.pieceSlots.push({ x, y, w, h, piece, groupName, slotIndex });
 
@@ -2081,9 +2758,9 @@ function drawPieceCard(piece, x, y, w, h, groupName, slotIndex) {
     w,
     h,
     16,
-    selected ? "rgba(255, 179, 71, 0.24)" : "rgba(255, 255, 255, 0.08)",
-    selected ? "#ffb347" : hovered ? "rgba(255, 255, 255, 0.35)" : "rgba(255, 255, 255, 0.18)",
-    selected ? 3 : 2
+    selected ? "rgba(255, 179, 71, 0.24)" : focused ? "rgba(159, 199, 243, 0.16)" : "rgba(255, 255, 255, 0.08)",
+    selected ? "#ffb347" : focused ? "#ffcf70" : hovered ? "rgba(255, 255, 255, 0.35)" : "rgba(255, 255, 255, 0.18)",
+    selected ? 3 : focused ? 3 : 2
   );
 
   drawText(BASE_TYPE_LABELS[piece.squareType], x + 12, y + 18, {
@@ -2336,6 +3013,8 @@ function drawGrid(player) {
 }
 
 function drawPieceTrays() {
+  ensureFocusedPieceSlot();
+
   drawText("2x1 Pieces", 50, 56, {
     font: "700 22px 'Trebuchet MS', sans-serif",
     color: "#ffe6b9"
@@ -2492,27 +3171,95 @@ function drawArrivalCard(result, x, y, w, h) {
 }
 
 function drawArrivalSummary() {
-  drawRoundedRect(690, 140, 214, 288, 18, "rgba(15, 20, 44, 0.88)", "rgba(255, 216, 155, 0.28)", 2);
-  drawText("Arrival Summary", 797, 172, {
-    font: "700 24px 'Trebuchet MS', sans-serif",
+  drawRoundedRect(690, 140, 214, 96, 18, "rgba(15, 20, 44, 0.88)", "rgba(255, 216, 155, 0.28)", 2);
+  drawText("Arrival Summary", 797, 158, {
+    font: "700 18px 'Trebuchet MS', sans-serif",
     color: "#ffe6b9",
     align: "center"
   });
 
   state.arrivalPhaseResults.playerSummaries.forEach((summary, index) => {
-    const top = 208 + index * 52;
-    drawRoundedRect(708, top, 178, 40, 12, "rgba(255, 248, 231, 0.1)", "rgba(255, 216, 155, 0.18)", 1);
-    drawText(summary.playerName, 722, top + 16, {
-      font: "700 16px 'Trebuchet MS', sans-serif",
-      color: "#fff7eb"
+    const top = 170 + index * 12;
+    drawRoundedRect(704, top, 186, 18, 9, "rgba(255, 248, 231, 0.1)", "rgba(255, 216, 155, 0.18)", 1);
+    drawText(summary.playerName, 710, top + 10, {
+      font: "700 10px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      baseline: "middle"
     });
-    drawText(`${summary.matchedCards} cards`, 722, top + 34, {
-      font: "12px 'Trebuchet MS', sans-serif",
-      color: "#d8cee0"
+    drawText(`${summary.matchedCards} cards`, 830, top + 10, {
+      font: "9px 'Trebuchet MS', sans-serif",
+      color: "#d8cee0",
+      align: "right",
+      baseline: "middle"
     });
-    drawText(`+$${summary.income}`, 872, top + 22, {
-      font: "700 20px 'Trebuchet MS', sans-serif",
+    drawText(`+$${summary.income}`, 884, top + 10, {
+      font: "700 11px 'Trebuchet MS', sans-serif",
       color: "#ffe6b9",
+      align: "right",
+      baseline: "middle"
+    });
+  });
+}
+
+function drawSideHustleSummary() {
+  drawRoundedRect(690, 246, 214, 96, 18, "rgba(15, 20, 44, 0.88)", "rgba(255, 216, 155, 0.28)", 2);
+  drawText("Side Hustles", 797, 264, {
+    font: "700 18px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+
+  state.sideHustlePhaseResults.forEach((summary, index) => {
+    const top = 276 + index * 12;
+    const topHustle = summary.hustles[0];
+    drawRoundedRect(704, top, 186, 18, 9, "rgba(255, 248, 231, 0.1)", "rgba(255, 216, 155, 0.18)", 1);
+    drawText(summary.playerName, 710, top + 10, {
+      font: "700 10px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      baseline: "middle"
+    });
+    drawText(topHustle ? topHustle.label : "No side income", 832, top + 10, {
+      font: "9px 'Trebuchet MS', sans-serif",
+      color: topHustle ? "#d8cee0" : "rgba(216, 206, 224, 0.7)",
+      align: "right",
+      baseline: "middle"
+    });
+    drawText(`+$${summary.totalIncome}`, 884, top + 10, {
+      font: "700 11px 'Trebuchet MS', sans-serif",
+      color: summary.totalIncome > 0 ? "#b8f7aa" : "#d8cee0",
+      align: "right",
+      baseline: "middle"
+    });
+  });
+}
+
+function drawAdjacencySummary() {
+  drawRoundedRect(690, 352, 214, 96, 18, "rgba(15, 20, 44, 0.88)", "rgba(255, 216, 155, 0.28)", 2);
+  drawText("Adjacency Bonuses", 797, 370, {
+    font: "700 18px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+
+  state.adjacencyPhaseResults.forEach((summary, index) => {
+    const top = 382 + index * 12;
+    const topResult = [...summary.results].sort((a, b) => Math.abs(b.netIncome) - Math.abs(a.netIncome))[0];
+    const netLabel = summary.netIncome >= 0 ? `+$${summary.netIncome}` : `-$${Math.abs(summary.netIncome)}`;
+    drawRoundedRect(704, top, 186, 18, 9, "rgba(255, 248, 231, 0.1)", "rgba(255, 216, 155, 0.18)", 1);
+    drawText(summary.playerName, 710, top + 10, {
+      font: "700 10px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      baseline: "middle"
+    });
+    drawText(topResult ? `${topResult.label} ${topResult.netIncome >= 0 ? "+" : ""}${topResult.netIncome}` : "Balanced layout", 832, top + 10, {
+      font: "9px 'Trebuchet MS', sans-serif",
+      color: topResult ? "#d8cee0" : "rgba(216, 206, 224, 0.7)",
+      align: "right",
+      baseline: "middle"
+    });
+    drawText(netLabel, 884, top + 10, {
+      font: "700 11px 'Trebuchet MS', sans-serif",
+      color: summary.netIncome >= 0 ? "#b8f7aa" : "#ff9a9a",
       align: "right",
       baseline: "middle"
     });
@@ -2569,6 +3316,8 @@ function drawSeasonScreen() {
   });
 
   drawArrivalSummary();
+  drawSideHustleSummary();
+  drawAdjacencySummary();
 
   registerButton({
     x: 716,
@@ -2608,6 +3357,7 @@ function drawSeasonScreen() {
 }
 
 function drawPassOverlay() {
+  ensureOverlayFocus();
   ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -2637,11 +3387,13 @@ function drawPassOverlay() {
     h: 44,
     label: "OK",
     action: "close-pass-overlay",
-    variant: "primary"
+    variant: "primary",
+    focused: state.focusedButtonAction === "close-pass-overlay"
   });
 }
 
 function drawExitOverlay() {
+  ensureOverlayFocus();
   ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -2671,7 +3423,8 @@ function drawExitOverlay() {
     h: 44,
     label: "Stay",
     action: "close-exit-overlay",
-    variant: "secondary"
+    variant: "secondary",
+    focused: state.focusedButtonAction === "close-exit-overlay"
   });
 
   registerButton({
@@ -2681,11 +3434,13 @@ function drawExitOverlay() {
     h: 44,
     label: "Exit",
     action: "confirm-exit-game",
-    variant: "danger"
+    variant: "danger",
+    focused: state.focusedButtonAction === "confirm-exit-game"
   });
 }
 
 function drawPassConfirmOverlay() {
+  ensureOverlayFocus();
   const player = getCurrentPlayerState();
   if (!player) {
     return;
@@ -2720,7 +3475,8 @@ function drawPassConfirmOverlay() {
     h: 44,
     label: "Keep Building",
     action: "close-pass-confirm",
-    variant: "secondary"
+    variant: "secondary",
+    focused: state.focusedButtonAction === "close-pass-confirm"
   });
 
   registerButton({
@@ -2730,11 +3486,13 @@ function drawPassConfirmOverlay() {
     h: 44,
     label: "Pass",
     action: "confirm-pass-round",
-    variant: "primary"
+    variant: "primary",
+    focused: state.focusedButtonAction === "confirm-pass-round"
   });
 }
 
 function drawLaborDayOverlay() {
+  ensureOverlayFocus();
   ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -2764,11 +3522,13 @@ function drawLaborDayOverlay() {
     h: 42,
     label: "OK",
     action: "begin-office-season",
-    variant: "primary"
+    variant: "primary",
+    focused: state.focusedButtonAction === "begin-office-season"
   });
 }
 
 function drawMemorialDayOverlay() {
+  ensureOverlayFocus();
   ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -2798,11 +3558,13 @@ function drawMemorialDayOverlay() {
     h: 42,
     label: "OK",
     action: "close-memorial-day-overlay",
-    variant: "primary"
+    variant: "primary",
+    focused: state.focusedButtonAction === "close-memorial-day-overlay"
   });
 }
 
 function drawGameOverOverlay() {
+  ensureOverlayFocus();
   ctx.fillStyle = "rgba(6, 9, 20, 0.78)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
@@ -2865,7 +3627,8 @@ function drawGameOverOverlay() {
     h: 40,
     label: "Return To Main Menu",
     action: "return-to-main-menu",
-    variant: "primary"
+    variant: "primary",
+    focused: state.focusedButtonAction === "return-to-main-menu"
   });
 }
 
@@ -2917,6 +3680,11 @@ function handleAction(button) {
     return;
   }
 
+  if (!getActiveOverlayConfig()) {
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
+  }
+
   if (button.action === "play") {
     state.screen = "players";
     state.statusMessage = "";
@@ -2961,11 +3729,15 @@ function handleAction(button) {
     state.gameOverOverlay = false;
     state.finalStandings = [];
     state.exitOverlay = false;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
   if (button.action === "close-memorial-day-overlay") {
     state.memorialDayOverlay = false;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
@@ -2994,6 +3766,8 @@ function handleAction(button) {
   if (button.action === "menu") {
     if (state.screen === "game" || state.screen === "season") {
       state.exitOverlay = true;
+      state.focusedButtonAction = "close-exit-overlay";
+      state.focusedModalButtonIndex = 0;
       return;
     }
 
@@ -3008,21 +3782,29 @@ function handleAction(button) {
     state.laborDayOverlay = false;
     state.gameOverOverlay = false;
     state.finalStandings = [];
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
   if (button.action === "close-pass-overlay") {
     state.passOverlay = null;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
   if (button.action === "pass-round") {
     state.passConfirmOverlay = true;
+    state.focusedButtonAction = "close-pass-confirm";
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
   if (button.action === "close-pass-confirm") {
     state.passConfirmOverlay = false;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
@@ -3033,6 +3815,8 @@ function handleAction(button) {
 
   if (button.action === "close-exit-overlay") {
     state.exitOverlay = false;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
@@ -3048,6 +3832,8 @@ function handleAction(button) {
     state.gameOverOverlay = false;
     state.finalStandings = [];
     state.exitOverlay = false;
+    state.focusedButtonAction = null;
+    state.focusedModalButtonIndex = 0;
     return;
   }
 
@@ -3124,6 +3910,16 @@ canvas.addEventListener("pointerdown", (event) => {
 
   const clickedButton = [...state.uiButtons].reverse().find((button) => pointInRect(point.x, point.y, button));
   if (clickedButton) {
+    if (getActiveOverlayConfig()) {
+      state.focusedButtonAction = clickedButton.action;
+      const overlay = getActiveOverlayConfig();
+      if (overlay) {
+        const actionIndex = overlay.actions.indexOf(clickedButton.action);
+        if (actionIndex >= 0) {
+          state.focusedModalButtonIndex = actionIndex;
+        }
+      }
+    }
     handleAction(clickedButton);
     return;
   }
@@ -3143,6 +3939,13 @@ canvas.addEventListener("pointerdown", (event) => {
 
     const clickedPiece = state.pieceSlots.find((slot) => pointInRect(point.x, point.y, slot));
     if (clickedPiece) {
+      const availableSlots = getAvailablePieceSlots();
+      const focusedIndex = availableSlots.findIndex((slot) =>
+        slot.groupName === clickedPiece.groupName && slot.slotIndex === clickedPiece.slotIndex
+      );
+      if (focusedIndex >= 0) {
+        state.focusedPieceSlotIndex = focusedIndex;
+      }
       state.selectedPiece = {
         groupName: clickedPiece.groupName,
         slotIndex: clickedPiece.slotIndex,
@@ -3164,9 +3967,9 @@ canvas.addEventListener("pointerdown", (event) => {
   }
 });
 
-window.addEventListener("keydown", (event) => {
+function handlePlayerSetupKeydown(event) {
   if (state.screen !== "players") {
-    return;
+    return false;
   }
 
   if (event.key === "Tab") {
@@ -3187,7 +3990,7 @@ window.addEventListener("keydown", (event) => {
     } else {
       state.activeInputIndex = (state.activeInputIndex + 1) % state.players.length;
     }
-    return;
+    return true;
   }
 
   if (event.key === "Enter") {
@@ -3208,30 +4011,189 @@ window.addEventListener("keydown", (event) => {
     } else {
       state.playerSetupFocus = "start";
     }
-    return;
+    return true;
   }
 
   if (event.key === "Backspace") {
     event.preventDefault();
     const current = state.players[state.activeInputIndex] || "";
     state.players[state.activeInputIndex] = current.slice(0, -1);
-    return;
+    return true;
   }
 
   if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) {
-    return;
+    return false;
   }
 
   const current = state.players[state.activeInputIndex] || "";
   if (current.length >= MAX_NAME_LENGTH) {
     state.statusMessage = "Player names can be up to 24 characters.";
-    return;
+    return true;
   }
 
   state.playerSetupFocus = "input";
   state.players[state.activeInputIndex] = current + event.key;
   state.statusMessage = "";
-});
+  return true;
+}
+
+function handleOverlayKeydown(event) {
+  const overlay = getActiveOverlayConfig();
+  if (!overlay) {
+    return false;
+  }
+
+  ensureOverlayFocus();
+
+  if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+    event.preventDefault();
+    cycleOverlayButtonFocus(-1);
+    return true;
+  }
+
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+    event.preventDefault();
+    cycleOverlayButtonFocus(1);
+    return true;
+  }
+
+  if (event.key === "Escape" && overlay.cancelAction) {
+    event.preventDefault();
+    triggerButtonAction(overlay.cancelAction);
+    return true;
+  }
+
+  if (event.key === " " || event.key === "Spacebar" || event.key === "Enter") {
+    event.preventDefault();
+    if (event.repeat) {
+      return true;
+    }
+    triggerButtonAction(getDefaultActionForCurrentOverlay());
+    return true;
+  }
+
+  return false;
+}
+
+function handleGameKeyboard(event) {
+  if (state.screen !== "game") {
+    return false;
+  }
+
+  if (getActiveOverlayConfig()) {
+    return false;
+  }
+
+  const lowerKey = event.key.toLowerCase();
+
+  if (!state.pendingPlacement && (event.key === "Tab" || event.key === "[" || event.key === "]" || lowerKey === "a" || lowerKey === "d")) {
+    event.preventDefault();
+    cycleFocusedPieceSlot(event.key === "]" || lowerKey === "d" ? 1 : -1);
+    return true;
+  }
+
+  if (!state.pendingPlacement && (event.key === " " || event.key === "Spacebar" || event.key === "Enter")) {
+    event.preventDefault();
+    return selectFocusedPieceSlot();
+  }
+
+  if (event.key === "ArrowUp") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("move-up");
+    return true;
+  }
+
+  if (event.key === "ArrowLeft") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("move-left");
+    return true;
+  }
+
+  if (event.key === "ArrowDown") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("move-down");
+    return true;
+  }
+
+  if (event.key === "ArrowRight") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("move-right");
+    return true;
+  }
+
+  if (lowerKey === "q") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("rotate-left");
+    return true;
+  }
+
+  if (lowerKey === "e") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("rotate-right");
+    return true;
+  }
+
+  if (lowerKey === "f") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("flip-piece");
+    return true;
+  }
+
+  if (event.key === "Enter" || event.key === " " || event.key === "Spacebar") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("confirm-placement");
+    return true;
+  }
+
+  if (event.key === "Escape" || event.key === "Backspace" || event.key === "Delete") {
+    if (!state.pendingPlacement) {
+      return false;
+    }
+    event.preventDefault();
+    triggerButtonAction("cancel-placement");
+    return true;
+  }
+
+  return false;
+}
+
+function handleGlobalKeydown(event) {
+  if (handlePlayerSetupKeydown(event)) {
+    return;
+  }
+
+  if (handleOverlayKeydown(event)) {
+    return;
+  }
+
+  handleGameKeyboard(event);
+}
+
+window.addEventListener("keydown", handleGlobalKeydown);
 
 function frame(now) {
   state.time = now / 1000;
