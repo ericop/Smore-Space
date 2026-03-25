@@ -407,18 +407,13 @@ function getNextActivePlayerIndex(startIndex) {
   return startIndex;
 }
 
-function startNextRound() {
-  state.roundNumber += 1;
-  state.playerStates.forEach((player) => {
-    player.passedThisRound = false;
-  });
-  maybeRefillMarket();
-  state.activePlayerIndex = 0;
-  state.passOverlay = {
-    nextPlayerName: state.playerStates[0].name,
-    message: `Round ${state.roundNumber} begins. ${state.playerStates[0].name} goes first.`
-  };
-  state.statusMessage = state.passOverlay.message;
+function startCampingSeason() {
+  state.selectedPiece = null;
+  state.pendingPlacement = null;
+  state.passOverlay = null;
+  state.passConfirmOverlay = false;
+  state.statusMessage = "Memorial Day has come! Time to host campers.";
+  state.screen = "season";
 }
 
 function advanceTurn() {
@@ -427,7 +422,7 @@ function advanceTurn() {
   }
 
   if (allPlayersPassed()) {
-    startNextRound();
+    startCampingSeason();
     return;
   }
 
@@ -1325,6 +1320,64 @@ function drawGameScreen() {
   }
 }
 
+function drawSeasonScreen() {
+  drawRoundedRect(90, 62, 780, 404, 28, "rgba(15, 20, 44, 0.9)", "rgba(255, 216, 155, 0.3)", 3);
+  drawText("Camping Season", CANVAS_WIDTH / 2, 112, {
+    font: "700 42px 'Trebuchet MS', sans-serif",
+    color: "#ffe6b9",
+    align: "center"
+  });
+  drawWrappedText(
+    "Memorial Day has come! Time to host campers.",
+    CANVAS_WIDTH / 2,
+    154,
+    520,
+    34,
+    {
+      font: "28px 'Trebuchet MS', sans-serif",
+      color: "#fff7eb",
+      align: "center"
+    }
+  );
+
+  const sections = [
+    { label: "Early Summer", x: 126 },
+    { label: "Mid Summer", x: 384 },
+    { label: "Late Summer", x: 642 }
+  ];
+
+  sections.forEach((section) => {
+    drawRoundedRect(section.x, 240, 192, 170, 20, "rgba(255, 248, 231, 0.12)", "rgba(255, 216, 155, 0.28)", 2);
+    drawText(section.label, section.x + 96, 274, {
+      font: "700 28px 'Trebuchet MS', sans-serif",
+      color: "#ffe6b9",
+      align: "center"
+    });
+    drawWrappedText(
+      "Season actions will go here later.",
+      section.x + 96,
+      320,
+      150,
+      28,
+      {
+        font: "20px 'Trebuchet MS', sans-serif",
+        color: "#d8cee0",
+        align: "center"
+      }
+    );
+  });
+
+  registerButton({
+    x: 400,
+    y: 432,
+    w: 160,
+    h: 42,
+    label: "Main Menu",
+    action: "menu",
+    variant: "secondary"
+  });
+}
+
 function drawPassOverlay() {
   ctx.fillStyle = "rgba(6, 9, 20, 0.72)";
   ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -1471,6 +1524,11 @@ function draw() {
 
   if (state.screen === "how-to-play") {
     drawHowToPlayScreen();
+    return;
+  }
+
+  if (state.screen === "season") {
+    drawSeasonScreen();
     return;
   }
 
